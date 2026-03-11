@@ -10,6 +10,7 @@
   --muted: #9db0cd;
   --accent: #7be0b8;
   --accent-strong: #42b89b;
+  --warning: #ffd27a;
   --danger: #ff857d;
   --shadow: 0 24px 80px rgba(1, 8, 18, 0.45);
 }
@@ -345,9 +346,23 @@ select {
   word-break: break-word;
 }
 
+.message {
+  margin: 0;
+  padding: 0.85rem 1rem;
+  border-radius: 16px;
+  border: 1px solid transparent;
+}
+
 .message--error {
-  margin: 1rem 0 0;
   color: var(--danger);
+  border-color: rgba(255, 133, 125, 0.24);
+  background: rgba(91, 21, 22, 0.22);
+}
+
+.message--warning {
+  color: var(--warning);
+  border-color: rgba(255, 210, 122, 0.22);
+  background: rgba(86, 60, 18, 0.22);
 }
 
 @media (max-width: 1080px) {

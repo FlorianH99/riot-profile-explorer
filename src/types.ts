@@ -43,6 +43,8 @@ export type MasteryEntry = {
 export type MatchRecord = {
   id: string;
   status: number;
+  ok: boolean;
+  endpoint: string;
   data: {
     metadata?: {
       matchId?: string;
@@ -65,6 +67,12 @@ export type MatchRecord = {
   };
 };
 
+export type RiotEndpointError = {
+  endpoint: string;
+  status: number;
+  detail: unknown;
+};
+
 export type RiotProfileResponse = {
   query: {
     gameName: string;
@@ -82,9 +90,9 @@ export type RiotProfileResponse = {
       profileIconId: number;
       summonerLevel: number;
     } | null;
-    ranked: RankedEntry[];
-    masteryTop: MasteryEntry[];
-    matchIds: string[];
+    ranked: RankedEntry[] | null;
+    masteryTop: MasteryEntry[] | null;
+    matchIds: string[] | null;
   };
   raw: {
     account: unknown;
@@ -94,9 +102,5 @@ export type RiotProfileResponse = {
     matchIds: unknown;
     matches: MatchRecord[];
   };
-  errors: Array<{
-    endpoint: string;
-    status: number;
-    detail: unknown;
-  }>;
+  errors: RiotEndpointError[];
 };

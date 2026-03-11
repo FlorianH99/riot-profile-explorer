@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const envPath = path.join(__dirname, ".env");
+const requestTimeoutMs = 8000;
 
 try {
   const envSource = await readFile(envPath, "utf8");
@@ -52,17 +53,24 @@ const platformToRegional = {
 
 function sendJson(response, statusCode, payload) {
   response.writeHead(statusCode, {
-    "Content-Type": "application/json; charset=utf-8",
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "Content-Type"
+    "Content-Type": "application/json; charset=utf-8"
   });
   response.end(JSON.stringify(payload));
 }
 
-async function riotFetch(host, pathname, searchParams = undefined) {
+function normalizeFailure(endpoint, result) {
+  return {
+    endpoint,
+    status: result.status,
+    detail: result.data
+  };
+}
+
+async function riotFetch(endpoint, host, pathname, searchParams = undefined) {
   if (!riotApiKey) {
     return {
       ok: false,
+      endpoint,
       status: 500,
       data: {
         message: "Missing RIOT_API_KEY. Add it to a local .env file before starting the server."
@@ -79,26 +87,50 @@ async function riotFetch(host, pathname, searchParams = undefined) {
     }
   }
 
-  const response = await fetch(url, {
-    headers: {
-      "X-Riot-Token": riotApiKey
-    }
-  });
-
-  const text = await response.text();
-  let data;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
 
   try {
-    data = text ? JSON.parse(text) : null;
-  } catch {
-    data = text;
-  }
+    const response = await fetch(url, {
+      headers: {
+        "X-Riot-Token": riotApiKey
+      },
+      signal: controller.signal
+    });
 
-  return {
-    ok: response.ok,
-    status: response.status,
-    data
-  };
+    const text = await response.text();
+    let data;
+
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = text;
+    }
+
+    return {
+      ok: response.ok,
+      endpoint,
+      status: response.status,
+      data
+    };
+  } catch (error) {
+    const isAbort = error instanceof Error && error.name === "AbortError";
+    return {
+      ok: false,
+      endpoint,
+      status: 504,
+      data: {
+        message: isAbort ? `Request timed out after ${requestTimeoutMs}ms.` : "Network request failed.",
+        detail: error instanceof Error ? error.message : String(error)
+      }
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function summarizeSection(result) {
+  return result.ok ? result.data : null;
 }
 
 async function handleProfileLookup(request, response) {
@@ -126,6 +158,7 @@ async function handleProfileLookup(request, response) {
 
   try {
     const account = await riotFetch(
+      "account-v1",
       `${regional}.api.riotgames.com`,
       `/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(gameName)}/${encodeURIComponent(tagLine)}`
     );
@@ -133,6 +166,7 @@ async function handleProfileLookup(request, response) {
     if (!account.ok || !account.data?.puuid) {
       sendJson(response, account.status, {
         message: "Unable to resolve Riot ID.",
+        errors: [normalizeFailure("account-v1", account)],
         raw: { account: account.data }
       });
       return;
@@ -141,26 +175,49 @@ async function handleProfileLookup(request, response) {
     const puuid = account.data.puuid;
 
     const [summoner, ranked, mastery, matchIds] = await Promise.all([
-      riotFetch(`${platform}.api.riotgames.com`, `/lol/summoner/v4/summoners/by-puuid/${encodeURIComponent(puuid)}`),
-      riotFetch(`${platform}.api.riotgames.com`, `/lol/league/v4/entries/by-puuid/${encodeURIComponent(puuid)}`),
       riotFetch(
+        "summoner-v4",
+        `${platform}.api.riotgames.com`,
+        `/lol/summoner/v4/summoners/by-puuid/${encodeURIComponent(puuid)}`
+      ),
+      riotFetch(
+        "league-v4",
+        `${platform}.api.riotgames.com`,
+        `/lol/league/v4/entries/by-puuid/${encodeURIComponent(puuid)}`
+      ),
+      riotFetch(
+        "champion-mastery-v4",
         `${platform}.api.riotgames.com`,
         `/lol/champion-mastery/v4/champion-masteries/by-puuid/${encodeURIComponent(puuid)}/top`,
         { count: 5 }
       ),
-      riotFetch(`${regional}.api.riotgames.com`, `/lol/match/v5/matches/by-puuid/${encodeURIComponent(puuid)}/ids`, {
-        start: 0,
-        count: matchCount
-      })
+      riotFetch(
+        "match-v5 ids",
+        `${regional}.api.riotgames.com`,
+        `/lol/match/v5/matches/by-puuid/${encodeURIComponent(puuid)}/ids`,
+        { start: 0, count: matchCount }
+      )
     ]);
 
     const matchDetails = Array.isArray(matchIds.data) && matchIds.ok
       ? await Promise.all(
-          matchIds.data.map((matchId) =>
-            riotFetch(`${regional}.api.riotgames.com`, `/lol/match/v5/matches/${encodeURIComponent(matchId)}`)
+          matchIds.data.map((matchId, index) =>
+            riotFetch(
+              `match-v5 detail ${index + 1}`,
+              `${regional}.api.riotgames.com`,
+              `/lol/match/v5/matches/${encodeURIComponent(matchId)}`
+            )
           )
         )
       : [];
+
+    const errors = [account, summoner, ranked, mastery, matchIds, ...matchDetails]
+      .filter((entry) => !entry.ok)
+      .map((entry) => normalizeFailure(entry.endpoint, entry));
+
+    const blockingFailure = [summoner, ranked, mastery, matchIds].some(
+      (entry) => !entry.ok && [401, 403, 429, 500, 502, 503, 504].includes(entry.status)
+    );
 
     const payload = {
       query: {
@@ -175,10 +232,10 @@ async function handleProfileLookup(request, response) {
           tagLine: account.data.tagLine,
           puuid
         },
-        summoner: summoner.ok ? summoner.data : null,
-        ranked: ranked.ok ? ranked.data : [],
-        masteryTop: mastery.ok ? mastery.data : [],
-        matchIds: matchIds.ok ? matchIds.data : []
+        summoner: summarizeSection(summoner),
+        ranked: summarizeSection(ranked),
+        masteryTop: summarizeSection(mastery),
+        matchIds: summarizeSection(matchIds)
       },
       raw: {
         account: account.data,
@@ -189,29 +246,15 @@ async function handleProfileLookup(request, response) {
         matches: matchDetails.map((entry, index) => ({
           id: Array.isArray(matchIds.data) ? matchIds.data[index] : `match-${index}`,
           status: entry.status,
+          ok: entry.ok,
+          endpoint: entry.endpoint,
           data: entry.data
         }))
       },
-      errors: [
-        !summoner.ok
-          ? { endpoint: "summoner-v4", status: summoner.status, detail: summoner.data }
-          : null,
-        !ranked.ok ? { endpoint: "league-v4", status: ranked.status, detail: ranked.data } : null,
-        !mastery.ok
-          ? { endpoint: "champion-mastery-v4", status: mastery.status, detail: mastery.data }
-          : null,
-        !matchIds.ok ? { endpoint: "match-v5 ids", status: matchIds.status, detail: matchIds.data } : null,
-        ...matchDetails
-          .filter((entry) => !entry.ok)
-          .map((entry, index) => ({
-            endpoint: `match-v5 detail ${index + 1}`,
-            status: entry.status,
-            detail: entry.data
-          }))
-      ].filter(Boolean)
+      errors
     };
 
-    sendJson(response, 200, payload);
+    sendJson(response, blockingFailure ? 502 : 200, payload);
   } catch (error) {
     sendJson(response, 500, {
       message: "Unexpected proxy error while contacting Riot APIs.",
@@ -254,16 +297,6 @@ async function serveStaticAsset(response, pathname) {
 createServer(async (request, response) => {
   if (!request.url) {
     sendJson(response, 400, { message: "Missing request URL." });
-    return;
-  }
-
-  if (request.method === "OPTIONS") {
-    response.writeHead(204, {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Headers": "Content-Type",
-      "Access-Control-Allow-Methods": "GET,OPTIONS"
-    });
-    response.end();
     return;
   }
 

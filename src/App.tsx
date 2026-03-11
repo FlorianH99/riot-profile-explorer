@@ -1,6 +1,6 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { z } from "zod";
-import type { PlatformRoute, RiotProfileResponse, SearchFormState } from "./types";
+import type { PlatformRoute, RiotEndpointError, RiotProfileResponse, SearchFormState } from "./types";
 
 const platformValues = [
   "na1",
@@ -69,17 +69,17 @@ const defaultForm: SearchFormState = {
 
 const storageKey = "riot-profile-explorer:last-search";
 
-async function fetchProfile(form: SearchFormState) {
+async function fetchProfile(form: SearchFormState, signal: AbortSignal) {
   const params = new URLSearchParams({
     gameName: form.gameName,
     tagLine: form.tagLine,
     platform: form.platform,
     matchCount: "5"
   });
-  const response = await fetch(`/api/profile?${params.toString()}`);
+  const response = await fetch(`/api/profile?${params.toString()}`, { signal });
   const payload = await response.json();
 
-  if (!response.ok) {
+  if (!response.ok && !payload?.summary?.account) {
     const message = typeof payload?.message === "string" ? payload.message : "Request failed.";
     throw new Error(message);
   }
@@ -101,6 +101,13 @@ function formatDuration(seconds = 0) {
   return `${minutes}m ${remainder}s`;
 }
 
+function formatError(error: RiotEndpointError) {
+  const detail = typeof error.detail === "object" && error.detail !== null && "message" in error.detail
+    ? String(error.detail.message)
+    : "Request failed.";
+  return `${error.endpoint} returned HTTP ${error.status}: ${detail}`;
+}
+
 export function App() {
   const [form, setForm] = useState<SearchFormState>(defaultForm);
   const [activeRawSection, setActiveRawSection] =
@@ -108,6 +115,7 @@ export function App() {
   const [data, setData] = useState<RiotProfileResponse | null>(null);
   const [status, setStatus] = useState<"idle" | "loading" | "error">("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     const saved = window.localStorage.getItem(storageKey);
@@ -126,10 +134,22 @@ export function App() {
     }
   }, []);
 
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
+
   const selectedPlatform = useMemo(
     () => platformOptions.find((option) => option.value === form.platform) ?? platformOptions[0],
     [form.platform]
   );
+
+  const rankedError = data?.errors.find((entry) => entry.endpoint === "league-v4") ?? null;
+  const masteryError = data?.errors.find((entry) => entry.endpoint === "champion-mastery-v4") ?? null;
+  const summonerError = data?.errors.find((entry) => entry.endpoint === "summoner-v4") ?? null;
+  const matchError = data?.errors.find((entry) => entry.endpoint === "match-v5 ids") ?? null;
+  const matchDetailErrors = data?.errors.filter((entry) => entry.endpoint.startsWith("match-v5 detail")) ?? [];
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -141,15 +161,26 @@ export function App() {
       return;
     }
 
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     setStatus("loading");
     setErrorMessage(null);
 
     try {
-      const response = await fetchProfile(parsed.data);
+      const response = await fetchProfile(parsed.data, controller.signal);
       setData(response);
       setStatus("idle");
       window.localStorage.setItem(storageKey, JSON.stringify(parsed.data));
+      if (response.errors.length > 0) {
+        setErrorMessage("Some Riot endpoints failed. Review the endpoint warnings below.");
+      }
     } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        return;
+      }
+
       setStatus("error");
       setErrorMessage(error instanceof Error ? error.message : "Unknown request failure.");
     }
@@ -228,7 +259,7 @@ export function App() {
           <code>RIOT_API_KEY</code>
           <span>belongs in your local `.env` file before you run the proxy.</span>
         </div>
-        {errorMessage ? <p className="message--error">{errorMessage}</p> : null}
+        {errorMessage ? <p className="message message--error">{errorMessage}</p> : null}
       </section>
 
       <section className="content-grid">
@@ -259,12 +290,16 @@ export function App() {
                 </div>
               </div>
 
+              {summonerError ? <p className="message message--warning">{formatError(summonerError)}</p> : null}
+
               <section className="subpanel">
                 <div className="subpanel__header">
                   <h3>Ranked queues</h3>
-                  <span>{data.summary.ranked.length || 0} entries</span>
+                  <span>{data.summary.ranked?.length ?? 0} entries</span>
                 </div>
-                {data.summary.ranked.length ? (
+                {rankedError ? (
+                  <p className="message message--warning">{formatError(rankedError)}</p>
+                ) : data.summary.ranked?.length ? (
                   <div className="rank-grid">
                     {data.summary.ranked.map((entry) => {
                       const games = entry.wins + entry.losses;
@@ -292,9 +327,11 @@ export function App() {
               <section className="subpanel">
                 <div className="subpanel__header">
                   <h3>Top mastery slice</h3>
-                  <span>{data.summary.masteryTop.length || 0} champions</span>
+                  <span>{data.summary.masteryTop?.length ?? 0} champions</span>
                 </div>
-                {data.summary.masteryTop.length ? (
+                {masteryError ? (
+                  <p className="message message--warning">{formatError(masteryError)}</p>
+                ) : data.summary.masteryTop?.length ? (
                   <div className="mastery-list">
                     {data.summary.masteryTop.map((entry) => (
                       <article className="mastery-card" key={entry.championId}>
@@ -312,11 +349,17 @@ export function App() {
               <section className="subpanel">
                 <div className="subpanel__header">
                   <h3>Recent match sample</h3>
-                  <span>{data.raw.matches.length} loaded matches</span>
+                  <span>{data.raw.matches.filter((match) => match.ok).length} loaded matches</span>
                 </div>
-                {data.raw.matches.length ? (
+                {matchError ? <p className="message message--warning">{formatError(matchError)}</p> : null}
+                {matchDetailErrors.length ? (
+                  <p className="message message--warning">
+                    {matchDetailErrors.length} match detail request(s) failed. Check the partial failures panel.
+                  </p>
+                ) : null}
+                {data.raw.matches.some((match) => match.ok) ? (
                   <div className="match-list">
-                    {data.raw.matches.map((match) => {
+                    {data.raw.matches.filter((match) => match.ok).map((match) => {
                       const participant = match.data.info?.participants?.find(
                         (entry) =>
                           entry.riotIdGameName?.toLowerCase() === data.summary.account.gameName.toLowerCase() &&
@@ -364,9 +407,7 @@ export function App() {
                   </div>
                   <ul className="error-list">
                     {data.errors.map((entry) => (
-                      <li key={`${entry.endpoint}-${entry.status}`}>
-                        {entry.endpoint} returned HTTP {entry.status}
-                      </li>
+                      <li key={`${entry.endpoint}-${entry.status}`}>{formatError(entry)}</li>
                     ))}
                   </ul>
                 </section>
