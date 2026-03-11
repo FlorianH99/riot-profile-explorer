@@ -145,6 +145,33 @@ function summarizeSection(result) {
   return result.ok ? result.data : null;
 }
 
+function describeAccountLookupFailure(result) {
+  const detailMessage =
+    typeof result.data === "object" &&
+    result.data !== null &&
+    "message" in result.data
+      ? String(result.data.message)
+      : null;
+
+  if (result.status === 401 || result.status === 403) {
+    return "Riot API key was rejected while resolving this Riot ID. Development keys expire every 24 hours, so refresh the key in .env and restart the server.";
+  }
+
+  if (result.status === 404) {
+    return "No Riot account matched that game name and tag line. Check spelling, capitalization, and tag line exactly as shown in the Riot client.";
+  }
+
+  if (result.status === 429) {
+    return "Riot API rate limits were hit while resolving this Riot ID. Wait a moment and try again.";
+  }
+
+  if (detailMessage) {
+    return `Unable to resolve Riot ID: ${detailMessage}`;
+  }
+
+  return `Unable to resolve Riot ID (HTTP ${result.status}).`;
+}
+
 async function handleProfileLookup(request, response) {
   const url = new URL(request.url, `http://${request.headers.host}`);
   const gameName = url.searchParams.get("gameName")?.trim();
@@ -177,7 +204,7 @@ async function handleProfileLookup(request, response) {
 
     if (!account.ok || !account.data?.puuid) {
       sendJson(response, account.status, {
-        message: "Unable to resolve Riot ID.",
+        message: describeAccountLookupFailure(account),
         errors: [normalizeFailure("account-v1", account)],
         raw: { account: account.data },
       });
