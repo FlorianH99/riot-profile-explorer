@@ -66,6 +66,15 @@ function normalizeFailure(endpoint, result) {
   };
 }
 
+function clampMatchCount(value) {
+  const parsed = Number.parseInt(value ?? "5", 10);
+  if (!Number.isFinite(parsed)) {
+    return 5;
+  }
+
+  return Math.min(Math.max(parsed, 1), 10);
+}
+
 async function riotFetch(endpoint, host, pathname, searchParams = undefined) {
   if (!riotApiKey) {
     return {
@@ -138,7 +147,7 @@ async function handleProfileLookup(request, response) {
   const gameName = url.searchParams.get("gameName")?.trim();
   const tagLine = url.searchParams.get("tagLine")?.trim();
   const platform = url.searchParams.get("platform")?.trim().toLowerCase();
-  const matchCount = Math.min(Number.parseInt(url.searchParams.get("matchCount") ?? "5", 10) || 5, 10);
+  const matchCount = clampMatchCount(url.searchParams.get("matchCount"));
 
   if (!gameName || !tagLine || !platform) {
     sendJson(response, 400, {
@@ -264,9 +273,13 @@ async function handleProfileLookup(request, response) {
 }
 
 async function serveStaticAsset(response, pathname) {
-  const root = path.join(__dirname, "dist");
+  const root = path.resolve(__dirname, "dist");
   const requestedPath = pathname === "/" ? "/index.html" : pathname;
-  const filePath = path.join(root, requestedPath);
+  const filePath = path.resolve(root, `.${requestedPath}`);
+
+  if (filePath !== root && !filePath.startsWith(`${root}${path.sep}`)) {
+    return false;
+  }
 
   try {
     const fileStats = await stat(filePath);
@@ -278,10 +291,13 @@ async function serveStaticAsset(response, pathname) {
     const typeMap = {
       ".css": "text/css; charset=utf-8",
       ".html": "text/html; charset=utf-8",
+      ".ico": "image/x-icon",
       ".js": "application/javascript; charset=utf-8",
       ".json": "application/json; charset=utf-8",
+      ".map": "application/json; charset=utf-8",
+      ".png": "image/png",
       ".svg": "image/svg+xml",
-      ".png": "image/png"
+      ".webp": "image/webp"
     };
 
     response.writeHead(200, {

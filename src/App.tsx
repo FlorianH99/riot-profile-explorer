@@ -47,8 +47,8 @@ const platformOptions: Array<{
 ];
 
 const searchSchema = z.object({
-  gameName: z.string().min(1, "Enter a Riot game name."),
-  tagLine: z.string().min(1, "Enter a Riot tag line."),
+  gameName: z.string().trim().min(1, "Enter a Riot game name."),
+  tagLine: z.string().trim().min(1, "Enter a Riot tag line."),
   platform: z.enum(platformValues)
 });
 
@@ -108,6 +108,26 @@ function formatError(error: RiotEndpointError) {
   return `${error.endpoint} returned HTTP ${error.status}: ${detail}`;
 }
 
+function normalizeText(value: string | undefined) {
+  return value?.trim().toLowerCase() ?? "";
+}
+
+function findParticipant(
+  match: RiotProfileResponse["raw"]["matches"][number],
+  account: RiotProfileResponse["summary"]["account"]
+) {
+  return match.data.info?.participants?.find((entry) => {
+    if (entry.puuid && entry.puuid === account.puuid) {
+      return true;
+    }
+
+    return (
+      normalizeText(entry.riotIdGameName) === normalizeText(account.gameName) &&
+      normalizeText(entry.riotIdTagline) === normalizeText(account.tagLine)
+    );
+  });
+}
+
 export function App() {
   const [form, setForm] = useState<SearchFormState>(defaultForm);
   const [activeRawSection, setActiveRawSection] =
@@ -150,12 +170,24 @@ export function App() {
   const summonerError = data?.errors.find((entry) => entry.endpoint === "summoner-v4") ?? null;
   const matchError = data?.errors.find((entry) => entry.endpoint === "match-v5 ids") ?? null;
   const matchDetailErrors = data?.errors.filter((entry) => entry.endpoint.startsWith("match-v5 detail")) ?? [];
+  const successfulMatches = data?.raw.matches.filter((match) => match.ok) ?? [];
+  const profileHealthLabel = data
+    ? data.errors.length > 0
+      ? `${data.errors.length} warning${data.errors.length === 1 ? "" : "s"}`
+      : "All clear"
+    : "Ready";
+  const rawPayload = data
+    ? data.raw[activeRawSection]
+    : {
+        message: "Run a search to inspect the raw payload returned by each backend segment."
+      };
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
     const parsed = searchSchema.safeParse(form);
     if (!parsed.success) {
+      setData(null);
       setErrorMessage(parsed.error.issues[0]?.message ?? "Invalid search.");
       setStatus("error");
       return;
@@ -165,6 +197,7 @@ export function App() {
     const controller = new AbortController();
     abortRef.current = controller;
 
+    setForm(parsed.data);
     setStatus("loading");
     setErrorMessage(null);
 
@@ -172,21 +205,21 @@ export function App() {
       const response = await fetchProfile(parsed.data, controller.signal);
       setData(response);
       setStatus("idle");
+      setActiveRawSection("account");
       window.localStorage.setItem(storageKey, JSON.stringify(parsed.data));
-      if (response.errors.length > 0) {
-        setErrorMessage("Some Riot endpoints failed. Review the endpoint warnings below.");
-      }
+      setErrorMessage(
+        response.errors.length > 0 ? "Some Riot endpoints failed. Review the endpoint warnings below." : null
+      );
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
         return;
       }
 
+      setData(null);
       setStatus("error");
       setErrorMessage(error instanceof Error ? error.message : "Unknown request failure.");
     }
   }
-
-  const rawPayload = data?.raw[activeRawSection] ?? null;
 
   return (
     <main className="shell">
@@ -218,7 +251,7 @@ export function App() {
           <h2>Player lookup</h2>
           <p>Use the Riot ID pair plus the platform route where the summoner actually plays.</p>
         </div>
-        <form className="lookup-form" onSubmit={handleSubmit}>
+        <form className="lookup-form" onSubmit={handleSubmit} aria-describedby="lookup-status">
           <label>
             <span>Game name</span>
             <input
@@ -254,12 +287,42 @@ export function App() {
             {status === "loading" ? "Pulling data..." : "Inspect profile"}
           </button>
         </form>
+
+        <div className="summary-strip">
+          <article className="summary-card">
+            <span className="summary-card__label">Search route</span>
+            <strong>{selectedPlatform.label}</strong>
+            <span>
+              {selectedPlatform.value.toUpperCase()} / {selectedPlatform.region}
+            </span>
+          </article>
+          <article className="summary-card">
+            <span className="summary-card__label">Endpoint health</span>
+            <strong>{profileHealthLabel}</strong>
+            <span>{data ? `${data.errors.length} failed request(s) captured` : "No request has been run yet"}</span>
+          </article>
+          <article className="summary-card">
+            <span className="summary-card__label">Recent matches</span>
+            <strong>{data ? successfulMatches.length : 0}</strong>
+            <span>{data ? "Detailed payloads loaded" : "Up to 5 recent matches per lookup"}</span>
+          </article>
+        </div>
+
         <div className="panel__footnote">
           <span>Need a key first?</span>
           <code>RIOT_API_KEY</code>
           <span>belongs in your local `.env` file before you run the proxy.</span>
         </div>
-        {errorMessage ? <p className="message message--error">{errorMessage}</p> : null}
+
+        <p id="lookup-status" className={status === "loading" ? "message message--info" : "sr-only"} aria-live="polite">
+          {status === "loading"
+            ? "Fetching account, summoner, ranked, mastery, and recent match data."
+            : "Lookup ready."}
+        </p>
+
+        {errorMessage ? (
+          <p className={status === "error" ? "message message--error" : "message message--warning"}>{errorMessage}</p>
+        ) : null}
       </section>
 
       <section className="content-grid">
@@ -268,6 +331,9 @@ export function App() {
             <h2>Structured profile view</h2>
             <p>The UI below is shaped from the live response, but the raw payload is preserved separately.</p>
           </div>
+          {status === "loading" && data ? (
+            <p className="message message--info">Refreshing results for {form.gameName || "your current search"}.</p>
+          ) : null}
           {data ? (
             <div className="stack">
               <div className="identity-card">
@@ -286,6 +352,14 @@ export function App() {
                   <div>
                     <span>Profile icon</span>
                     <strong>{data.summary.summoner?.profileIconId ?? "Unavailable"}</strong>
+                  </div>
+                  <div>
+                    <span>Platform route</span>
+                    <strong>{data.query.platform.toUpperCase()}</strong>
+                  </div>
+                  <div>
+                    <span>Regional cluster</span>
+                    <strong>{data.query.regional.toUpperCase()}</strong>
                   </div>
                 </div>
               </div>
@@ -349,7 +423,7 @@ export function App() {
               <section className="subpanel">
                 <div className="subpanel__header">
                   <h3>Recent match sample</h3>
-                  <span>{data.raw.matches.filter((match) => match.ok).length} loaded matches</span>
+                  <span>{successfulMatches.length} loaded matches</span>
                 </div>
                 {matchError ? <p className="message message--warning">{formatError(matchError)}</p> : null}
                 {matchDetailErrors.length ? (
@@ -357,14 +431,10 @@ export function App() {
                     {matchDetailErrors.length} match detail request(s) failed. Check the partial failures panel.
                   </p>
                 ) : null}
-                {data.raw.matches.some((match) => match.ok) ? (
+                {successfulMatches.length ? (
                   <div className="match-list">
-                    {data.raw.matches.filter((match) => match.ok).map((match) => {
-                      const participant = match.data.info?.participants?.find(
-                        (entry) =>
-                          entry.riotIdGameName?.toLowerCase() === data.summary.account.gameName.toLowerCase() &&
-                          entry.riotIdTagline?.toLowerCase() === data.summary.account.tagLine.toLowerCase()
-                      );
+                    {successfulMatches.map((match) => {
+                      const participant = findParticipant(match, data.summary.account);
                       return (
                         <article className="match-card" key={match.id}>
                           <div className="match-card__header">
@@ -413,6 +483,8 @@ export function App() {
                 </section>
               ) : null}
             </div>
+          ) : status === "loading" ? (
+            <p className="empty-state">Loading Riot profile data.</p>
           ) : (
             <p className="empty-state">
               Run a search to populate the profile view. The app will retain your last Riot ID locally in the browser.
@@ -429,7 +501,11 @@ export function App() {
             {rawSections.map((section) => (
               <button
                 key={section.key}
+                id={`raw-tab-${section.key}`}
                 type="button"
+                role="tab"
+                aria-selected={section.key === activeRawSection}
+                aria-controls={`raw-panel-${section.key}`}
                 className={section.key === activeRawSection ? "tab-strip__tab is-active" : "tab-strip__tab"}
                 onClick={() => setActiveRawSection(section.key)}
               >
@@ -437,7 +513,12 @@ export function App() {
               </button>
             ))}
           </div>
-          <div className="json-frame">
+          <div
+            id={`raw-panel-${activeRawSection}`}
+            className="json-frame"
+            role="tabpanel"
+            aria-labelledby={`raw-tab-${activeRawSection}`}
+          >
             <pre>{JSON.stringify(rawPayload, null, 2)}</pre>
           </div>
         </article>
