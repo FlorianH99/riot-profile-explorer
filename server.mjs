@@ -1,6 +1,6 @@
-import { createServer } from "node:http";
-import { readFile, stat } from "node:fs/promises";
 import { createReadStream } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
+import { createServer } from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -48,12 +48,12 @@ const platformToRegional = {
   th2: "sea",
   tr1: "europe",
   tw2: "sea",
-  vn2: "sea"
+  vn2: "sea",
 };
 
 function sendJson(response, statusCode, payload) {
   response.writeHead(statusCode, {
-    "Content-Type": "application/json; charset=utf-8"
+    "Content-Type": "application/json; charset=utf-8",
   });
   response.end(JSON.stringify(payload));
 }
@@ -62,7 +62,7 @@ function normalizeFailure(endpoint, result) {
   return {
     endpoint,
     status: result.status,
-    detail: result.data
+    detail: result.data,
   };
 }
 
@@ -82,8 +82,9 @@ async function riotFetch(endpoint, host, pathname, searchParams = undefined) {
       endpoint,
       status: 500,
       data: {
-        message: "Missing RIOT_API_KEY. Add it to a local .env file before starting the server."
-      }
+        message:
+          "Missing RIOT_API_KEY. Add it to a local .env file before starting the server.",
+      },
     };
   }
 
@@ -102,9 +103,9 @@ async function riotFetch(endpoint, host, pathname, searchParams = undefined) {
   try {
     const response = await fetch(url, {
       headers: {
-        "X-Riot-Token": riotApiKey
+        "X-Riot-Token": riotApiKey,
       },
-      signal: controller.signal
+      signal: controller.signal,
     });
 
     const text = await response.text();
@@ -120,7 +121,7 @@ async function riotFetch(endpoint, host, pathname, searchParams = undefined) {
       ok: response.ok,
       endpoint,
       status: response.status,
-      data
+      data,
     };
   } catch (error) {
     const isAbort = error instanceof Error && error.name === "AbortError";
@@ -129,9 +130,11 @@ async function riotFetch(endpoint, host, pathname, searchParams = undefined) {
       endpoint,
       status: 504,
       data: {
-        message: isAbort ? `Request timed out after ${requestTimeoutMs}ms.` : "Network request failed.",
-        detail: error instanceof Error ? error.message : String(error)
-      }
+        message: isAbort
+          ? `Request timed out after ${requestTimeoutMs}ms.`
+          : "Network request failed.",
+        detail: error instanceof Error ? error.message : String(error),
+      },
     };
   } finally {
     clearTimeout(timeout);
@@ -151,7 +154,7 @@ async function handleProfileLookup(request, response) {
 
   if (!gameName || !tagLine || !platform) {
     sendJson(response, 400, {
-      message: "gameName, tagLine, and platform are required."
+      message: "gameName, tagLine, and platform are required.",
     });
     return;
   }
@@ -160,7 +163,7 @@ async function handleProfileLookup(request, response) {
 
   if (!regional) {
     sendJson(response, 400, {
-      message: `Unsupported platform routing value: ${platform}`
+      message: `Unsupported platform routing value: ${platform}`,
     });
     return;
   }
@@ -176,7 +179,7 @@ async function handleProfileLookup(request, response) {
       sendJson(response, account.status, {
         message: "Unable to resolve Riot ID.",
         errors: [normalizeFailure("account-v1", account)],
-        raw: { account: account.data }
+        raw: { account: account.data },
       });
       return;
     }
@@ -205,27 +208,36 @@ async function handleProfileLookup(request, response) {
         `${regional}.api.riotgames.com`,
         `/lol/match/v5/matches/by-puuid/${encodeURIComponent(puuid)}/ids`,
         { start: 0, count: matchCount }
-      )
+      ),
     ]);
 
-    const matchDetails = Array.isArray(matchIds.data) && matchIds.ok
-      ? await Promise.all(
-          matchIds.data.map((matchId, index) =>
-            riotFetch(
-              `match-v5 detail ${index + 1}`,
-              `${regional}.api.riotgames.com`,
-              `/lol/match/v5/matches/${encodeURIComponent(matchId)}`
+    const matchDetails =
+      Array.isArray(matchIds.data) && matchIds.ok
+        ? await Promise.all(
+            matchIds.data.map((matchId, index) =>
+              riotFetch(
+                `match-v5 detail ${index + 1}`,
+                `${regional}.api.riotgames.com`,
+                `/lol/match/v5/matches/${encodeURIComponent(matchId)}`
+              )
             )
           )
-        )
-      : [];
+        : [];
 
-    const errors = [account, summoner, ranked, mastery, matchIds, ...matchDetails]
+    const errors = [
+      account,
+      summoner,
+      ranked,
+      mastery,
+      matchIds,
+      ...matchDetails,
+    ]
       .filter((entry) => !entry.ok)
       .map((entry) => normalizeFailure(entry.endpoint, entry));
 
     const blockingFailure = [summoner, ranked, mastery, matchIds].some(
-      (entry) => !entry.ok && [401, 403, 429, 500, 502, 503, 504].includes(entry.status)
+      (entry) =>
+        !entry.ok && [401, 403, 429, 500, 502, 503, 504].includes(entry.status)
     );
 
     const payload = {
@@ -233,18 +245,18 @@ async function handleProfileLookup(request, response) {
         gameName,
         tagLine,
         platform,
-        regional
+        regional,
       },
       summary: {
         account: {
           gameName: account.data.gameName,
           tagLine: account.data.tagLine,
-          puuid
+          puuid,
         },
         summoner: summarizeSection(summoner),
         ranked: summarizeSection(ranked),
         masteryTop: summarizeSection(mastery),
-        matchIds: summarizeSection(matchIds)
+        matchIds: summarizeSection(matchIds),
       },
       raw: {
         account: account.data,
@@ -253,21 +265,23 @@ async function handleProfileLookup(request, response) {
         masteryTop: mastery.data,
         matchIds: matchIds.data,
         matches: matchDetails.map((entry, index) => ({
-          id: Array.isArray(matchIds.data) ? matchIds.data[index] : `match-${index}`,
+          id: Array.isArray(matchIds.data)
+            ? matchIds.data[index]
+            : `match-${index}`,
           status: entry.status,
           ok: entry.ok,
           endpoint: entry.endpoint,
-          data: entry.data
-        }))
+          data: entry.data,
+        })),
       },
-      errors
+      errors,
     };
 
     sendJson(response, blockingFailure ? 502 : 200, payload);
   } catch (error) {
     sendJson(response, 500, {
       message: "Unexpected proxy error while contacting Riot APIs.",
-      detail: error instanceof Error ? error.message : String(error)
+      detail: error instanceof Error ? error.message : String(error),
     });
   }
 }
@@ -297,11 +311,11 @@ async function serveStaticAsset(response, pathname) {
       ".map": "application/json; charset=utf-8",
       ".png": "image/png",
       ".svg": "image/svg+xml",
-      ".webp": "image/webp"
+      ".webp": "image/webp",
     };
 
     response.writeHead(200, {
-      "Content-Type": typeMap[extension] ?? "application/octet-stream"
+      "Content-Type": typeMap[extension] ?? "application/octet-stream",
     });
     createReadStream(filePath).pipe(response);
     return true;
@@ -322,7 +336,10 @@ createServer(async (request, response) => {
   }
 
   if (request.method === "GET") {
-    const served = await serveStaticAsset(response, new URL(request.url, `http://${request.headers.host}`).pathname);
+    const served = await serveStaticAsset(
+      response,
+      new URL(request.url, `http://${request.headers.host}`).pathname
+    );
     if (served) {
       return;
     }
@@ -335,7 +352,8 @@ createServer(async (request, response) => {
       return;
     } catch {
       sendJson(response, 404, {
-        message: "Static build not found. Use `npm run dev` for development or `npm run build` before `npm start`."
+        message:
+          "Static build not found. Use `npm run dev` for development or `npm run build` before `npm start`.",
       });
       return;
     }
