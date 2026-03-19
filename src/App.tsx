@@ -1,13 +1,16 @@
+import AutoAwesomeRounded from "@mui/icons-material/AutoAwesomeRounded";
 import BoltRounded from "@mui/icons-material/BoltRounded";
 import DataObjectRounded from "@mui/icons-material/DataObjectRounded";
+import FilterAltRounded from "@mui/icons-material/FilterAltRounded";
 import HubRounded from "@mui/icons-material/HubRounded";
 import PublicRounded from "@mui/icons-material/PublicRounded";
 import QueryStatsRounded from "@mui/icons-material/QueryStatsRounded";
 import SearchRounded from "@mui/icons-material/SearchRounded";
+import SportsEsportsRounded from "@mui/icons-material/SportsEsportsRounded";
+import TimelineRounded from "@mui/icons-material/TimelineRounded";
 import WarningAmberRounded from "@mui/icons-material/WarningAmberRounded";
 import {
   Alert,
-  Avatar,
   alpha,
   Box,
   Button,
@@ -18,19 +21,14 @@ import {
   Divider,
   LinearProgress,
   MenuItem,
-  Paper,
   Stack,
-  Tab,
-  Tabs,
   TextField,
   ThemeProvider,
-  Tooltip,
   Typography,
 } from "@mui/material";
 import {
   type FormEvent,
   type ReactNode,
-  type SyntheticEvent,
   useEffect,
   useMemo,
   useRef,
@@ -38,6 +36,9 @@ import {
 } from "react";
 import { z } from "zod";
 import type {
+  ApiCallSummary,
+  MatchParticipant,
+  MatchRecord,
   PlatformRoute,
   RiotEndpointError,
   RiotProfileResponse,
@@ -88,162 +89,148 @@ const platformOptions: Array<{
   { value: "vn2", label: "Vietnam", region: "SEA" },
 ];
 
+const matchCountOptions = [20, 50, 80] as const;
+
 const searchSchema = z.object({
   gameName: z.string().trim().min(1, "Enter a Riot game name."),
   tagLine: z.string().trim().min(1, "Enter a Riot tag line."),
   platform: z.enum(platformValues),
+  matchCount: z.number().int().min(1).max(80),
 });
 
 const rawSections = [
-  { key: "account", label: "Account" },
+  { key: "account", label: "Account by Riot ID" },
+  { key: "accountByPuuid", label: "Account by PUUID" },
   { key: "summoner", label: "Summoner" },
   { key: "ranked", label: "Ranked" },
-  { key: "masteryTop", label: "Mastery" },
+  { key: "masteryTop", label: "Top mastery" },
+  { key: "masteryScore", label: "Mastery score" },
+  { key: "challenges", label: "Challenges" },
+  { key: "status", label: "Platform status" },
   { key: "matchIds", label: "Match IDs" },
-  { key: "matches", label: "Matches" },
+  { key: "matches", label: "Match details" },
+  { key: "timelines", label: "Timelines" },
 ] as const satisfies ReadonlyArray<{
   key: keyof RiotProfileResponse["raw"];
   label: string;
 }>;
 
+type PageView = "desk" | "payload";
+
+type ModeOption = {
+  key: string;
+  label: string;
+  note: string;
+  count: number;
+};
+
+type MatchInsight = {
+  match: MatchRecord;
+  participant?: MatchParticipant;
+  modeKey: string;
+  modeLabel: string;
+  modeNote: string;
+};
+
+type ChampionCatalogResponse = {
+  version: string;
+  locale: string;
+  champions: Array<{
+    id: number;
+    key: string;
+    slug: string;
+    name: string;
+  }>;
+};
+
 const defaultForm: SearchFormState = {
   gameName: "",
   tagLine: "",
   platform: "na1",
+  matchCount: 80,
 };
 
 const storageKey = "riot-profile-explorer:last-search";
 
+const queueLabels: Record<number, string> = {
+  400: "Normal Draft",
+  420: "Ranked Solo/Duo",
+  430: "Normal Blind",
+  440: "Ranked Flex",
+  450: "ARAM",
+  700: "Clash",
+  1700: "Arena",
+  1710: "Arena",
+  1810: "Swarm",
+  1900: "URF",
+};
+
 const appTheme = createTheme({
   palette: {
     mode: "light",
-    primary: { main: "#5f7890" },
-    secondary: { main: "#8a9bb0" },
-    background: {
-      default: "#f6f1e8",
-      paper: "#fffaf2",
-    },
-    error: { main: "#a96f78" },
-    warning: { main: "#8f936b" },
-    success: { main: "#6f8d7d" },
-    text: {
-      primary: "#1f2430",
-      secondary: "#5f6775",
-    },
+    primary: { main: "#536d82" },
+    secondary: { main: "#7d8f86" },
+    background: { default: "#f5f2ea", paper: "#fdfaf3" },
+    text: { primary: "#1f2733", secondary: "#5d6775" },
+    success: { main: "#5d8570" },
+    warning: { main: "#8d8660" },
+    error: { main: "#a36f74" },
   },
-  shape: {
-    borderRadius: 12,
-  },
+  shape: { borderRadius: 8 },
   typography: {
     fontFamily: '"Aptos", "Segoe UI Variable", "Segoe UI", sans-serif',
     h1: {
-      fontSize: "clamp(2rem, 4vw, 3.4rem)",
-      lineHeight: 0.93,
-      letterSpacing: "-0.05em",
+      fontSize: "clamp(2.4rem, 5vw, 4.8rem)",
+      lineHeight: 0.95,
+      letterSpacing: "-0.06em",
       fontWeight: 700,
     },
     h2: {
-      fontSize: "1.2rem",
+      fontSize: "1.3rem",
       lineHeight: 1,
-      letterSpacing: "-0.03em",
+      letterSpacing: "-0.04em",
       fontWeight: 700,
     },
-    h3: {
-      fontSize: "0.98rem",
-      fontWeight: 700,
-    },
-    overline: {
-      letterSpacing: "0.18em",
-      fontWeight: 700,
-    },
+    h3: { fontSize: "0.96rem", letterSpacing: "0.02em", fontWeight: 700 },
+    overline: { letterSpacing: "0.22em", fontWeight: 700 },
   },
   components: {
     MuiCssBaseline: {
       styleOverrides: {
         body: {
           minHeight: "100vh",
-          backgroundColor: "#f6f1e8",
+          backgroundColor: "#f5f2ea",
           backgroundImage: [
-            "radial-gradient(circle at 14% 0%, rgba(95, 120, 144, 0.10), transparent 22%)",
-            "radial-gradient(circle at 100% 0%, rgba(138, 155, 176, 0.10), transparent 24%)",
-            "linear-gradient(180deg, #fbf6ee 0%, #f6f1e8 42%, #efe7db 100%)",
+            "radial-gradient(circle at 12% 0%, rgba(83, 109, 130, 0.08), transparent 22%)",
+            "radial-gradient(circle at 88% 0%, rgba(125, 143, 134, 0.08), transparent 24%)",
+            "linear-gradient(180deg, #fbf8f2 0%, #f5f2ea 42%, #eeeadf 100%)",
           ].join(", "),
         },
-        "*": {
-          boxSizing: "border-box",
-        },
-      },
-    },
-    MuiPaper: {
-      styleOverrides: {
-        root: {
-          backgroundImage: "none",
-          boxShadow: "none",
-        },
+        "*": { boxSizing: "border-box" },
       },
     },
     MuiButton: {
-      defaultProps: {
-        disableElevation: true,
-        variant: "contained",
-      },
+      defaultProps: { disableElevation: true },
       styleOverrides: {
-        root: {
-          textTransform: "none",
-          borderRadius: "14px",
-          fontWeight: 700,
-          paddingInline: 18,
-          paddingBlock: 11,
-        },
+        root: { textTransform: "none", borderRadius: "10px", fontWeight: 700 },
       },
     },
     MuiChip: {
       styleOverrides: {
-        root: {
-          borderRadius: "14px",
-          maxWidth: "100%",
-        },
-      },
-    },
-    MuiTab: {
-      styleOverrides: {
-        root: {
-          textTransform: "none",
-          minHeight: 40,
-          minWidth: 0,
-          borderRadius: "14px",
-          fontWeight: 600,
-        },
+        root: { borderRadius: "999px" },
       },
     },
   },
 });
 
-const sectionShellSx = {
-  position: "relative",
-  overflow: "hidden",
-  border: "1px solid rgba(95, 103, 117, 0.16)",
-  borderRadius: { xs: "16px", md: "20px" },
-  backgroundColor: "rgba(255, 250, 242, 0.92)",
-  px: { xs: 2, md: 3 },
-  py: { xs: 2, md: 2.5 },
-  "&::before": {
-    content: '""',
-    position: "absolute",
-    insetInline: 0,
-    insetBlockStart: 0,
-    height: 1,
-    background:
-      "linear-gradient(90deg, rgba(95, 120, 144, 0.28), rgba(138, 155, 176, 0.12), transparent)",
-  },
-} as const;
+const ruleColor = "rgba(93, 103, 117, 0.18)";
 
 async function fetchProfile(form: SearchFormState, signal: AbortSignal) {
   const params = new URLSearchParams({
     gameName: form.gameName,
     tagLine: form.tagLine,
     platform: form.platform,
-    matchCount: "5",
+    matchCount: String(form.matchCount),
   });
   const response = await fetch(`/api/profile?${params.toString()}`, { signal });
   const payload = await response.json();
@@ -270,7 +257,7 @@ function formatRankedLabel(queueType: string) {
 function formatDuration(seconds = 0) {
   const minutes = Math.floor(seconds / 60);
   const remainder = seconds % 60;
-  return `${minutes}m ${remainder}s`;
+  return `${minutes}m ${remainder.toString().padStart(2, "0")}s`;
 }
 
 function formatError(error: RiotEndpointError) {
@@ -287,9 +274,81 @@ function normalizeText(value: string | undefined) {
   return value?.trim().toLowerCase() ?? "";
 }
 
+function formatCompactNumber(value: number | null | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "--";
+  }
+
+  return new Intl.NumberFormat("en", {
+    notation: value >= 1000 ? "compact" : "standard",
+    maximumFractionDigits: value >= 1000 ? 1 : 0,
+  }).format(value);
+}
+
+function formatPercent(value: number | null | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "--";
+  }
+
+  return `${Math.round(value)}%`;
+}
+
+function formatDecimal(value: number | null | undefined, digits = 2) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "--";
+  }
+
+  return value.toFixed(digits);
+}
+function formatLastPlayed(timestamp: number) {
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(new Date(timestamp));
+}
+
+function getChampionName(
+  championId: number,
+  championNames: Record<number, string>,
+) {
+  return championNames[championId] ?? `Champion ${championId}`;
+}
+
+async function fetchChampionCatalog(signal: AbortSignal) {
+  const response = await fetch("/api/champions", { signal });
+  const payload = await response.json();
+
+  if (!response.ok) {
+    const message =
+      typeof payload?.message === "string"
+        ? payload.message
+        : "Unable to load champion catalog.";
+    throw new Error(message);
+  }
+
+  return payload as ChampionCatalogResponse;
+}
+function getPageFromHash(): PageView {
+  if (typeof window === "undefined") {
+    return "desk";
+  }
+
+  return window.location.hash === "#payload" ? "payload" : "desk";
+}
+
+function setPageHash(view: PageView) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const nextHash = view === "payload" ? "#payload" : "#desk";
+  window.history.replaceState(null, "", nextHash);
+}
+
 function findParticipant(
   match: RiotProfileResponse["raw"]["matches"][number],
-  account: RiotProfileResponse["summary"]["account"]
+  account: RiotProfileResponse["summary"]["account"],
 ) {
   return match.data.info?.participants?.find((entry) => {
     if (entry.puuid && entry.puuid === account.puuid) {
@@ -303,85 +362,122 @@ function findParticipant(
   });
 }
 
-type SignalItemProps = {
-  icon: ReactNode;
-  label: string;
-  value: string;
-  note: string;
-  tone?: "primary" | "secondary" | "warning";
-};
+function getModeDescriptor(match: MatchRecord) {
+  const queueId = match.data.info?.queueId;
+  const gameMode = match.data.info?.gameMode;
+  const mapId = match.data.info?.mapId;
 
-function SignalItem({
-  icon,
+  if (typeof queueId === "number" && queueLabels[queueId]) {
+    return {
+      key: `queue:${queueId}`,
+      label: queueLabels[queueId],
+      note: `Queue ${queueId}`,
+    };
+  }
+
+  if (gameMode === "ARAM" && typeof queueId === "number" && queueId !== 450) {
+    return {
+      key: `queue:${queueId}`,
+      label: "ARAM Variant",
+      note: `Queue ${queueId}${mapId ? ` on map ${mapId}` : ""}`,
+    };
+  }
+
+  if (typeof queueId === "number") {
+    return {
+      key: `queue:${queueId}`,
+      label: gameMode ? `${gameMode}` : `Queue ${queueId}`,
+      note: `Queue ${queueId}${mapId ? ` on map ${mapId}` : ""}`,
+    };
+  }
+
+  return {
+    key: `mode:${gameMode ?? "unknown"}`,
+    label: gameMode ?? "Unknown mode",
+    note: mapId ? `Map ${mapId}` : "No queue metadata",
+  };
+}
+
+function NavButton({
+  active,
   label,
-  value,
-  note,
-  tone = "primary",
-}: SignalItemProps) {
-  const toneColor =
-    tone === "secondary"
-      ? "#8a9bb0"
-      : tone === "warning"
-        ? "#8f936b"
-        : "#5f7890";
-
+  onClick,
+}: {
+  active: boolean;
+  label: string;
+  onClick: () => void;
+}) {
   return (
-    <Stack
-      direction="row"
-      spacing={1.25}
-      alignItems="flex-start"
-      sx={{ minWidth: { xs: "100%", sm: 0 } }}
+    <Button
+      onClick={onClick}
+      variant="text"
+      sx={{
+        color: active ? "text.primary" : "text.secondary",
+        px: 0,
+        py: 0.5,
+        minWidth: 0,
+        borderRadius: 0,
+        borderBottom: active
+          ? "2px solid currentColor"
+          : "2px solid transparent",
+        fontWeight: active ? 700 : 600,
+        justifyContent: "flex-start",
+      }}
     >
-      <Box
-        sx={{
-          display: "grid",
-          placeItems: "center",
-          width: 34,
-          height: 34,
-          borderRadius: "10px",
-          color: toneColor,
-          backgroundColor: alpha(toneColor, 0.12),
-          flexShrink: 0,
-        }}
-      >
-        {icon}
-      </Box>
-      <Box sx={{ minWidth: 0 }}>
-        <Typography
-          variant="caption"
-          color="text.secondary"
-          sx={{ display: "block", letterSpacing: "0.12em" }}
-        >
-          {label}
-        </Typography>
-        <Typography variant="subtitle2">{value}</Typography>
-        <Typography variant="caption" color="text.secondary">
-          {note}
-        </Typography>
-      </Box>
-    </Stack>
+      {label}
+    </Button>
   );
 }
 
-type SectionFrameProps = {
-  title: string;
-  subtitle: string;
-  action?: ReactNode;
-  children: ReactNode;
-};
+function StatColumn({
+  label,
+  value,
+  note,
+}: {
+  label: string;
+  value: string;
+  note: string;
+}) {
+  return (
+    <Box sx={{ minWidth: 0, pr: 2 }}>
+      <Typography variant="overline" color="text.secondary">
+        {label}
+      </Typography>
+      <Typography
+        sx={{
+          fontSize: "clamp(1.7rem, 2.8vw, 2.6rem)",
+          lineHeight: 1,
+          letterSpacing: "-0.05em",
+          fontWeight: 700,
+          mt: 0.4,
+        }}
+      >
+        {value}
+      </Typography>
+      <Typography variant="body2" color="text.secondary" sx={{ mt: 0.6 }}>
+        {note}
+      </Typography>
+    </Box>
+  );
+}
 
-function SectionFrame({
+function SectionBand({
   title,
   subtitle,
   action,
   children,
-}: SectionFrameProps) {
+}: {
+  title: string;
+  subtitle: string;
+  action?: ReactNode;
+  children: ReactNode;
+}) {
   return (
-    <Paper sx={sectionShellSx}>
-      <Stack spacing={2}>
+    <Box sx={{ borderTop: `1px solid ${ruleColor}`, py: 3.2 }}>
+      <Stack spacing={2.25}>
         <Stack
           direction={{ xs: "column", sm: "row" }}
-          spacing={1.5}
+          spacing={1.2}
           justifyContent="space-between"
           alignItems={{ xs: "flex-start", sm: "center" }}
         >
@@ -390,7 +486,7 @@ function SectionFrame({
             <Typography
               variant="body2"
               color="text.secondary"
-              sx={{ mt: 0.5, maxWidth: 720 }}
+              sx={{ mt: 0.55, maxWidth: 760 }}
             >
               {subtitle}
             </Typography>
@@ -399,566 +495,636 @@ function SectionFrame({
         </Stack>
         {children}
       </Stack>
-    </Paper>
+    </Box>
   );
 }
 
-type RawPanelProps = {
-  value: (typeof rawSections)[number]["key"];
-  activeValue: (typeof rawSections)[number]["key"];
-  children: ReactNode;
-};
+function EndpointLine({
+  call,
+  active,
+  onClick,
+}: {
+  call: ApiCallSummary;
+  active: boolean;
+  onClick: () => void;
+}) {
+  const tone = !call.ok
+    ? "error.main"
+    : call.key === "matches" || call.key === "timelines"
+      ? "secondary.main"
+      : "primary.main";
 
-function RawPanel({ value, activeValue, children }: RawPanelProps) {
   return (
-    <Box
-      role="tabpanel"
-      hidden={value !== activeValue}
-      id={`raw-panel-${value}`}
-      aria-labelledby={`raw-tab-${value}`}
-      sx={{ pt: 2 }}
+    <Button
+      onClick={onClick}
+      variant="text"
+      sx={{
+        width: "100%",
+        justifyContent: "space-between",
+        px: 0,
+        py: 1.2,
+        borderRadius: 0,
+        borderBottom: `1px solid ${alpha("#5d6775", 0.12)}`,
+        color: "text.primary",
+        textAlign: "left",
+      }}
     >
-      {value === activeValue ? children : null}
-    </Box>
+      <Stack spacing={0.3} sx={{ minWidth: 0, textAlign: "left" }}>
+        <Typography
+          variant="subtitle2"
+          sx={{ color: active ? tone : "text.primary" }}
+        >
+          {call.label}
+        </Typography>
+        <Typography variant="caption" color="text.secondary">
+          {call.endpoint}
+        </Typography>
+      </Stack>
+      <Stack alignItems="flex-end" spacing={0.2} sx={{ ml: 2 }}>
+        <Typography variant="caption" sx={{ color: tone }}>
+          {call.returned ?? 0}/{call.requested ?? call.returned ?? 0}
+        </Typography>
+        <Typography variant="caption" color="text.secondary">
+          HTTP {call.status}
+        </Typography>
+      </Stack>
+    </Button>
   );
 }
 
 export function App() {
   const [form, setForm] = useState<SearchFormState>(defaultForm);
+  const [status, setStatus] = useState<
+    "idle" | "loading" | "success" | "error"
+  >("idle");
+  const [error, setError] = useState("");
+  const [data, setData] = useState<RiotProfileResponse | null>(null);
   const [activeRawSection, setActiveRawSection] =
     useState<(typeof rawSections)[number]["key"]>("account");
-  const [data, setData] = useState<RiotProfileResponse | null>(null);
-  const [status, setStatus] = useState<"idle" | "loading" | "error">("idle");
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [pageView, setPageView] = useState<PageView>(getPageFromHash);
+  const [activeMode, setActiveMode] = useState("all");
+  const [championNames, setChampionNames] = useState<Record<number, string>>(
+    {},
+  );
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    const saved = window.localStorage.getItem(storageKey);
-    if (!saved) {
-      return;
-    }
-
     try {
-      const parsed = searchSchema.partial().parse(JSON.parse(saved));
+      const stored = window.localStorage.getItem(storageKey);
+      if (!stored) {
+        return;
+      }
+
+      const parsed = JSON.parse(stored) as Partial<SearchFormState>;
       setForm((current) => ({
         ...current,
-        ...parsed,
+        gameName:
+          typeof parsed.gameName === "string"
+            ? parsed.gameName
+            : current.gameName,
+        tagLine:
+          typeof parsed.tagLine === "string" ? parsed.tagLine : current.tagLine,
+        platform:
+          typeof parsed.platform === "string" &&
+          platformValues.includes(parsed.platform as PlatformRoute)
+            ? (parsed.platform as PlatformRoute)
+            : current.platform,
+        matchCount:
+          typeof parsed.matchCount === "number" &&
+          Number.isFinite(parsed.matchCount)
+            ? Math.min(Math.max(parsed.matchCount, 1), 80)
+            : current.matchCount,
       }));
     } catch {
-      window.localStorage.removeItem(storageKey);
+      // Ignore invalid local storage.
     }
   }, []);
 
   useEffect(() => {
+    const handleHashChange = () => {
+      setPageView(getPageFromHash());
+    };
+
+    window.addEventListener("hashchange", handleHashChange);
+    return () => window.removeEventListener("hashchange", handleHashChange);
+  }, []);
+
+  useEffect(() => {
+    if (!data) {
+      setActiveMode("all");
+      return;
+    }
+
+    const options = new Set<string>(["all"]);
+    for (const match of data.raw.matches) {
+      if (!match.ok) {
+        continue;
+      }
+      options.add(getModeDescriptor(match).key);
+    }
+
+    if (!options.has(activeMode)) {
+      setActiveMode("all");
+    }
+  }, [activeMode, data]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    fetchChampionCatalog(controller.signal)
+      .then((catalog) => {
+        const lookup = Object.fromEntries(
+          catalog.champions.map((entry) => [entry.id, entry.name]),
+        ) as Record<number, string>;
+        setChampionNames(lookup);
+      })
+      .catch(() => {
+        // Fallback to champion ids if static catalog lookup fails.
+      });
+
     return () => {
+      controller.abort();
       abortRef.current?.abort();
     };
   }, []);
 
   const selectedPlatform = useMemo(
     () =>
-      platformOptions.find((option) => option.value === form.platform) ??
+      platformOptions.find((entry) => entry.value === form.platform) ??
       platformOptions[0],
-    [form.platform]
+    [form.platform],
   );
 
-  const rankedError =
-    data?.errors.find((entry) => entry.endpoint === "league-v4") ?? null;
-  const masteryError =
-    data?.errors.find((entry) => entry.endpoint === "champion-mastery-v4") ??
-    null;
-  const summonerError =
-    data?.errors.find((entry) => entry.endpoint === "summoner-v4") ?? null;
-  const matchError =
-    data?.errors.find((entry) => entry.endpoint === "match-v5 ids") ?? null;
+  const matchInsights = useMemo(() => {
+    if (!data) {
+      return [] as MatchInsight[];
+    }
+
+    return data.raw.matches
+      .filter((entry) => entry.ok)
+      .map((match) => {
+        const descriptor = getModeDescriptor(match);
+        return {
+          match,
+          participant: findParticipant(match, data.summary.account),
+          modeKey: descriptor.key,
+          modeLabel: descriptor.label,
+          modeNote: descriptor.note,
+        } satisfies MatchInsight;
+      });
+  }, [data]);
+
+  const modeOptions = useMemo(() => {
+    const groups = new Map<string, ModeOption>();
+
+    for (const entry of matchInsights) {
+      const existing = groups.get(entry.modeKey);
+      if (existing) {
+        existing.count += 1;
+      } else {
+        groups.set(entry.modeKey, {
+          key: entry.modeKey,
+          label: entry.modeLabel,
+          note: entry.modeNote,
+          count: 1,
+        });
+      }
+    }
+
+    return [
+      {
+        key: "all",
+        label: "All loaded modes",
+        note: `${matchInsights.length} detailed matches currently loaded`,
+        count: matchInsights.length,
+      },
+      ...Array.from(groups.values()).sort(
+        (left, right) => right.count - left.count,
+      ),
+    ];
+  }, [matchInsights]);
+
+  const filteredInsights = useMemo(() => {
+    if (activeMode === "all") {
+      return matchInsights;
+    }
+
+    return matchInsights.filter((entry) => entry.modeKey === activeMode);
+  }, [activeMode, matchInsights]);
+
+  const stats = useMemo(() => {
+    const sample = filteredInsights.length ? filteredInsights : matchInsights;
+    const loaded = sample.length;
+    const wins = sample.filter((entry) => entry.participant?.win).length;
+    const totalKills = sample.reduce(
+      (sum, entry) => sum + (entry.participant?.kills ?? 0),
+      0,
+    );
+    const totalAssists = sample.reduce(
+      (sum, entry) => sum + (entry.participant?.assists ?? 0),
+      0,
+    );
+    const totalDeaths = sample.reduce(
+      (sum, entry) => sum + (entry.participant?.deaths ?? 0),
+      0,
+    );
+    const totalDamage = sample.reduce(
+      (sum, entry) =>
+        sum + (entry.participant?.totalDamageDealtToChampions ?? 0),
+      0,
+    );
+    const totalGold = sample.reduce(
+      (sum, entry) => sum + (entry.participant?.goldEarned ?? 0),
+      0,
+    );
+    const peakKills = sample.reduce(
+      (max, entry) => Math.max(max, entry.participant?.kills ?? 0),
+      0,
+    );
+
+    return {
+      loaded,
+      winRate: loaded ? (wins / loaded) * 100 : null,
+      avgKda: loaded
+        ? (totalKills + totalAssists) / Math.max(totalDeaths, 1)
+        : null,
+      avgDamage: loaded ? totalDamage / loaded : null,
+      avgGold: loaded ? totalGold / loaded : null,
+      peakKills,
+    };
+  }, [filteredInsights, matchInsights]);
+
+  const rankedEntries = data?.summary.ranked ?? [];
+  const masteryEntries = useMemo(
+    () =>
+      [...(data?.summary.masteryTop ?? [])].sort(
+        (left, right) => right.lastPlayTime - left.lastPlayTime,
+      ),
+    [data],
+  );
+  const masteryPointsShown = masteryEntries.reduce(
+    (sum, entry) => sum + entry.championPoints,
+    0,
+  );
   const matchDetailErrors =
     data?.errors.filter((entry) =>
-      entry.endpoint.startsWith("match-v5 detail")
+      entry.endpoint.startsWith("match-v5 detail"),
     ) ?? [];
-  const successfulMatches = data?.raw.matches.filter((match) => match.ok) ?? [];
-  const profileHealthLabel = data
-    ? data.errors.length > 0
-      ? `${data.errors.length} warning${data.errors.length === 1 ? "" : "s"}`
-      : "All clear"
-    : "Ready";
+  const timelineErrors =
+    data?.errors.filter((entry) =>
+      entry.endpoint.startsWith("match-v5 timeline"),
+    ) ?? [];
+  const matchIdsError = data?.errors.find(
+    (entry) => entry.endpoint === "match-v5 ids",
+  );
+  const rankedError = data?.errors.find(
+    (entry) => entry.endpoint === "league-v4",
+  );
+  const masteryError = data?.errors.find(
+    (entry) => entry.endpoint === "champion-mastery-v4 top",
+  );
+  const challengesError = data?.errors.find(
+    (entry) => entry.endpoint === "challenges-v1",
+  );
   const rawPayload = data
     ? data.raw[activeRawSection]
-    : {
-        message:
-          "Run a search to inspect the raw payload returned by each backend segment.",
-      };
+    : { message: "Run a search to inspect the full backend payload." };
+  const activeCall = data?.meta.apiCalls.find(
+    (entry) => entry.key === activeRawSection,
+  );
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    const parsed = searchSchema.safeParse(form);
+    const parsed = searchSchema.safeParse({
+      gameName: form.gameName,
+      tagLine: form.tagLine,
+      platform: form.platform,
+      matchCount: form.matchCount,
+    });
+
     if (!parsed.success) {
-      setData(null);
-      setErrorMessage(parsed.error.issues[0]?.message ?? "Invalid search.");
+      setError(parsed.error.issues[0]?.message ?? "Enter a valid Riot ID.");
       setStatus("error");
       return;
     }
+
+    const nextForm = {
+      ...parsed.data,
+      gameName: parsed.data.gameName.trim(),
+      tagLine: parsed.data.tagLine.trim(),
+    } satisfies SearchFormState;
 
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
 
-    setForm(parsed.data);
+    setForm(nextForm);
     setStatus("loading");
-    setErrorMessage(null);
+    setError("");
 
     try {
-      const response = await fetchProfile(parsed.data, controller.signal);
-      setData(response);
-      setStatus("idle");
+      window.localStorage.setItem(storageKey, JSON.stringify(nextForm));
+      const payload = await fetchProfile(nextForm, controller.signal);
+      setData(payload);
+      setStatus("success");
       setActiveRawSection("account");
-      window.localStorage.setItem(storageKey, JSON.stringify(parsed.data));
-      setErrorMessage(
-        response.errors.length > 0
-          ? "Some Riot endpoints failed. Review the warnings below."
-          : null
-      );
-    } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") {
+      setActiveMode("all");
+    } catch (requestError) {
+      if (controller.signal.aborted) {
         return;
       }
 
       setData(null);
       setStatus("error");
-      setErrorMessage(
-        error instanceof Error ? error.message : "Unknown request failure."
+      setError(
+        requestError instanceof Error
+          ? requestError.message
+          : "Request failed.",
       );
     }
   }
 
-  function handleRawSectionChange(
-    _event: SyntheticEvent,
-    value: (typeof rawSections)[number]["key"]
-  ) {
-    setActiveRawSection(value);
+  function handlePageChange(nextView: PageView) {
+    setPageView(nextView);
+    setPageHash(nextView);
   }
 
   return (
     <ThemeProvider theme={appTheme}>
       <CssBaseline />
-      <Container maxWidth="xl" sx={{ py: { xs: 2.5, md: 4 } }}>
-        <Stack spacing={3}>
+      <Container maxWidth="xl" sx={{ py: { xs: 3, md: 4.5 } }}>
+        <Stack spacing={{ xs: 3, md: 4 }}>
+          <Stack
+            direction={{ xs: "column", lg: "row" }}
+            spacing={{ xs: 2, lg: 4 }}
+            justifyContent="space-between"
+          >
+            <Stack spacing={2.2} sx={{ minWidth: { lg: 340 } }}>
+              <Stack direction="row" spacing={2.2}>
+                <NavButton
+                  active={pageView === "desk"}
+                  label="Profile Desk"
+                  onClick={() => handlePageChange("desk")}
+                />
+                <NavButton
+                  active={pageView === "payload"}
+                  label="Payload Lab"
+                  onClick={() => handlePageChange("payload")}
+                />
+              </Stack>
+            </Stack>
+          </Stack>
+
           <Box
+            component="form"
+            onSubmit={handleSubmit}
             sx={{
-              display: "grid",
-              gap: 3,
-              alignItems: "start",
-              gridTemplateColumns: {
-                xs: "1fr",
-                lg: "minmax(0, 1.25fr) minmax(320px, 0.7fr)",
-              },
-              pb: 2.5,
-              borderBottom: "1px solid rgba(95, 103, 117, 0.14)",
+              borderTop: `1px solid ${ruleColor}`,
+              borderBottom: `1px solid ${ruleColor}`,
+              py: 2.4,
+              background:
+                "linear-gradient(90deg, rgba(255,255,255,0.2), rgba(255,255,255,0))",
             }}
           >
-            <Box sx={{ maxWidth: 760 }}>
-              <Typography variant="overline" color="primary.main">
-                Riot Profile Explorer
-              </Typography>
-              <Typography variant="h1" sx={{ mt: 1 }}>
-                Search live profiles and inspect the raw response without the
-                usual dashboard sludge.
-              </Typography>
-              <Typography
-                variant="body1"
-                color="text.secondary"
-                sx={{ mt: 1.5, maxWidth: 660 }}
-              >
-                One interface for Riot ID lookup, ranked context, mastery
-                slices, recent matches, and the untouched JSON your UI is
-                actually consuming.
-              </Typography>
+            <Stack spacing={2}>
               <Stack
-                direction={{ xs: "column", sm: "row" }}
-                spacing={1}
-                flexWrap="wrap"
-                useFlexGap
-                sx={{ mt: 2.25 }}
+                direction={{ xs: "column", lg: "row" }}
+                spacing={2}
+                alignItems={{ xs: "stretch", lg: "flex-end" }}
               >
-                <Chip
-                  icon={<SearchRounded />}
-                  label="Lookup by Riot ID"
-                  color="primary"
-                />
-                <Chip
-                  icon={<QueryStatsRounded />}
-                  label="Ranked, mastery, and match samples"
-                  variant="outlined"
-                />
-                <Chip
-                  icon={<DataObjectRounded />}
-                  label="Tabbed raw inspector"
-                  variant="outlined"
-                />
-              </Stack>
-            </Box>
-
-            <Paper
-              sx={{
-                ...sectionShellSx,
-                p: { xs: 2, md: 2.25 },
-                alignSelf: { xs: "stretch", lg: "end" },
-              }}
-            >
-              <Stack
-                divider={
-                  <Divider
-                    flexItem
-                    sx={{ borderColor: "rgba(95, 103, 117, 0.12)" }}
-                  />
-                }
-                spacing={1.5}
-              >
-                <SignalItem
-                  icon={<PublicRounded fontSize="small" />}
-                  label="Route"
-                  value={selectedPlatform.label}
-                  note={selectedPlatform.value.toUpperCase()}
-                />
-                <SignalItem
-                  icon={<HubRounded fontSize="small" />}
-                  label="Cluster"
-                  value={selectedPlatform.region}
-                  note="Account and match routing"
-                  tone="secondary"
-                />
-                <SignalItem
-                  icon={<WarningAmberRounded fontSize="small" />}
-                  label="Health"
-                  value={profileHealthLabel}
-                  note={
-                    data
-                      ? `${data.errors.length} failed request(s)`
-                      : "No request yet"
+                <TextField
+                  fullWidth
+                  label="Game name"
+                  value={form.gameName}
+                  onChange={(event) =>
+                    setForm((current) => ({
+                      ...current,
+                      gameName: event.target.value,
+                    }))
                   }
-                  tone="warning"
+                />
+                <TextField
+                  fullWidth
+                  label="Tag line"
+                  value={form.tagLine}
+                  onChange={(event) =>
+                    setForm((current) => ({
+                      ...current,
+                      tagLine: event.target.value,
+                    }))
+                  }
+                />
+                <TextField
+                  select
+                  label="Platform"
+                  value={form.platform}
+                  onChange={(event) =>
+                    setForm((current) => ({
+                      ...current,
+                      platform: event.target.value as PlatformRoute,
+                    }))
+                  }
+                  sx={{ minWidth: { lg: 220 } }}
+                >
+                  {platformOptions.map((option) => (
+                    <MenuItem key={option.value} value={option.value}>
+                      {option.label} ({option.value})
+                    </MenuItem>
+                  ))}
+                </TextField>
+                <TextField
+                  select
+                  label="History depth"
+                  value={String(form.matchCount)}
+                  onChange={(event) =>
+                    setForm((current) => ({
+                      ...current,
+                      matchCount: Number(event.target.value),
+                    }))
+                  }
+                  sx={{ minWidth: { lg: 140 } }}
+                >
+                  {matchCountOptions.map((count) => (
+                    <MenuItem key={count} value={count}>
+                      {count} matches
+                    </MenuItem>
+                  ))}
+                </TextField>
+                <Button
+                  fullWidth
+                  type="submit"
+                  variant="contained"
+                  startIcon={<SearchRounded />}
+                  sx={{ minHeight: 56, px: 2.4 }}
+                >
+                  Inspect profile
+                </Button>
+              </Stack>
+
+              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                <Chip
+                  label={`${selectedPlatform.label} / ${selectedPlatform.region}`}
+                  variant="outlined"
+                />
+                <Chip
+                  label={`Up to ${form.matchCount} match details`}
+                  variant="outlined"
+                />
+                <Chip label="Timeline samples included" variant="outlined" />
+                <Chip
+                  label="Raw payload moved to Payload Lab"
+                  variant="outlined"
                 />
               </Stack>
-            </Paper>
+            </Stack>
           </Box>
 
-          <Box
-            sx={{
-              display: "grid",
-              gap: 3,
-              alignItems: "start",
-              gridTemplateColumns: {
-                xs: "1fr",
-                xl: "minmax(0, 1.2fr) minmax(420px, 0.8fr)",
-              },
-            }}
-          >
-            <Stack spacing={3}>
-              <SectionFrame
-                title="Player lookup"
-                subtitle="Use the Riot ID pair plus the platform route where the summoner actually plays."
-                action={
-                  <Chip
-                    icon={<BoltRounded />}
-                    label={
-                      status === "loading" ? "Fetching live data" : "Ready"
-                    }
-                    color={status === "loading" ? "secondary" : "default"}
-                    variant={status === "loading" ? "filled" : "outlined"}
-                  />
-                }
-              >
-                <Box component="form" onSubmit={handleSubmit} noValidate>
-                  <Box
-                    sx={{
-                      display: "grid",
-                      gap: 2,
-                      gridTemplateColumns: {
-                        xs: "1fr",
-                        md: "minmax(0, 1fr) minmax(0, 1fr) minmax(200px, 0.8fr) auto",
-                      },
-                    }}
-                  >
-                    <TextField
-                      label="Game name"
-                      value={form.gameName}
-                      onChange={(event) =>
-                        setForm((current) => ({
-                          ...current,
-                          gameName: event.target.value,
-                        }))
-                      }
-                      placeholder="Doublelift"
-                      fullWidth
-                    />
-                    <TextField
-                      label="Tag line"
-                      value={form.tagLine}
-                      onChange={(event) =>
-                        setForm((current) => ({
-                          ...current,
-                          tagLine: event.target.value,
-                        }))
-                      }
-                      placeholder="NA1"
-                      fullWidth
-                    />
-                    <TextField
-                      select
-                      label="Platform"
-                      value={form.platform}
-                      onChange={(event) =>
-                        setForm((current) => ({
-                          ...current,
-                          platform: event.target.value as PlatformRoute,
-                        }))
-                      }
-                      fullWidth
-                    >
-                      {platformOptions.map((option) => (
-                        <MenuItem key={option.value} value={option.value}>
-                          {option.label} ({option.value})
-                        </MenuItem>
-                      ))}
-                    </TextField>
-                    <Button
-                      type="submit"
-                      disabled={status === "loading"}
-                      sx={{ minHeight: 56 }}
-                    >
-                      {status === "loading"
-                        ? "Pulling data..."
-                        : "Inspect profile"}
-                    </Button>
-                  </Box>
-                </Box>
+          {status === "loading" ? <LinearProgress color="secondary" /> : null}
+          {status === "error" && error ? (
+            <Alert severity="error">{error}</Alert>
+          ) : null}
 
-                {status === "loading" ? (
-                  <LinearProgress sx={{ borderRadius: "6px" }} />
-                ) : null}
-
-                <Stack
-                  direction={{ xs: "column", md: "row" }}
-                  spacing={1.2}
-                  flexWrap="wrap"
-                  useFlexGap
-                >
-                  <Chip
-                    label={`${selectedPlatform.label} / ${selectedPlatform.region}`}
-                    variant="outlined"
-                  />
-                  <Chip
-                    label={
-                      data
-                        ? `${successfulMatches.length} detailed matches loaded`
-                        : "Up to 5 recent matches per lookup"
-                    }
-                    variant="outlined"
-                  />
-                  <Chip
-                    label="RIOT_API_KEY stays on the server"
-                    variant="outlined"
-                  />
-                </Stack>
-
-                {errorMessage ? (
-                  <Alert severity={status === "error" ? "error" : "warning"}>
-                    {errorMessage}
-                  </Alert>
-                ) : null}
-              </SectionFrame>
-
-              <SectionFrame
-                title="Structured profile view"
-                subtitle="Readable first, but still honest about partial failures and missing backend segments."
+          {pageView === "desk" ? (
+            <Stack spacing={0}>
+              <SectionBand
+                title="Identity and headline stats"
+                subtitle="Bigger numbers first, then the supporting detail. The metric rail tracks the active mode filter when one is selected."
                 action={
                   data ? (
-                    <Chip
-                      label={`${data.query.platform.toUpperCase()} -> ${data.query.regional.toUpperCase()}`}
-                      variant="outlined"
-                    />
+                    <Stack
+                      direction="row"
+                      spacing={1}
+                      flexWrap="wrap"
+                      useFlexGap
+                    >
+                      <Chip
+                        icon={<SportsEsportsRounded />}
+                        label={`${data.meta.matchCountLoaded} loaded matches`}
+                        variant="outlined"
+                      />
+                      <Chip
+                        icon={<TimelineRounded />}
+                        label={`${data.meta.timelineCountLoaded} timeline samples`}
+                        variant="outlined"
+                      />
+                    </Stack>
                   ) : undefined
                 }
               >
-                {status === "loading" && data ? (
-                  <Alert severity="info" variant="outlined">
-                    Refreshing results for{" "}
-                    {form.gameName || "your current search"}.
-                  </Alert>
-                ) : null}
-
                 {data ? (
-                  <Stack
-                    spacing={2.5}
-                    divider={
-                      <Divider
-                        flexItem
-                        sx={{ borderColor: "rgba(95, 103, 117, 0.12)" }}
-                      />
-                    }
-                  >
+                  <Stack spacing={3}>
                     <Box
                       sx={{
-                        display: "grid",
-                        gap: 2,
-                        alignItems: "start",
-                        gridTemplateColumns: {
-                          xs: "1fr",
-                          lg: "minmax(0, 1.1fr) minmax(320px, 0.9fr)",
-                        },
-                        pb: 0.5,
+                        borderTop: `1px solid ${alpha("#5d6775", 0.16)}`,
+                        pt: 2.1,
                       }}
                     >
-                      <Stack direction="row" spacing={1.75} alignItems="center">
-                        <Avatar
-                          sx={{
-                            width: 56,
-                            height: 56,
-                            bgcolor: alpha("#5f7890", 0.1),
-                            color: "primary.main",
-                            fontWeight: 700,
-                          }}
-                        >
-                          {data.summary.account.gameName
-                            .slice(0, 2)
-                            .toUpperCase()}
-                        </Avatar>
-                        <Box sx={{ minWidth: 0 }}>
-                          <Stack
-                            direction="row"
-                            spacing={1}
-                            alignItems="baseline"
-                            flexWrap="wrap"
-                            useFlexGap
-                          >
-                            <Typography
-                              variant="h2"
-                              sx={{ fontSize: { xs: "1.6rem", md: "2rem" } }}
-                            >
-                              {data.summary.account.gameName}
-                            </Typography>
-                            <Typography variant="body1" color="text.secondary">
-                              #{data.summary.account.tagLine}
-                            </Typography>
-                          </Stack>
-                          <Tooltip title={data.summary.account.puuid}>
-                            <Typography
-                              variant="body2"
-                              color="text.secondary"
-                              sx={{ mt: 0.75 }}
-                            >
-                              PUUID:{" "}
-                              {`${data.summary.account.puuid.slice(0, 24)}...`}
-                            </Typography>
-                          </Tooltip>
-                        </Box>
-                      </Stack>
-
                       <Box
                         sx={{
                           display: "grid",
-                          gap: 1.25,
+                          gap: 2,
                           gridTemplateColumns: {
-                            xs: "1fr 1fr",
-                            sm: "repeat(4, minmax(0, 1fr))",
-                            lg: "repeat(2, minmax(0, 1fr))",
+                            xs: "repeat(2, minmax(0, 1fr))",
+                            lg: "repeat(6, minmax(0, 1fr))",
                           },
                         }}
                       >
-                        {[
-                          [
-                            "Summoner level",
-                            String(
-                              data.summary.summoner?.summonerLevel ??
-                                "Unavailable"
-                            ),
-                          ],
-                          [
-                            "Profile icon",
-                            String(
-                              data.summary.summoner?.profileIconId ??
-                                "Unavailable"
-                            ),
-                          ],
-                          ["Platform", data.query.platform.toUpperCase()],
-                          ["Cluster", data.query.regional.toUpperCase()],
-                        ].map(([label, value]) => (
-                          <Box key={label} sx={{ minWidth: 0 }}>
-                            <Typography
-                              variant="caption"
-                              color="text.secondary"
-                              sx={{ letterSpacing: "0.12em" }}
-                            >
-                              {label}
-                            </Typography>
-                            <Typography variant="subtitle1" sx={{ mt: 0.35 }}>
-                              {value}
-                            </Typography>
-                          </Box>
-                        ))}
+                        <StatColumn
+                          label="Win rate"
+                          value={formatPercent(stats.winRate)}
+                          note={
+                            filteredInsights.length && activeMode !== "all"
+                              ? "Current mode filter"
+                              : "Across loaded history"
+                          }
+                        />
+                        <StatColumn
+                          label="Average KDA"
+                          value={formatDecimal(stats.avgKda)}
+                          note="Kills plus assists over deaths"
+                        />
+                        <StatColumn
+                          label="Average damage"
+                          value={formatCompactNumber(stats.avgDamage)}
+                          note="Champion damage per match"
+                        />
+                        <StatColumn
+                          label="Average gold"
+                          value={formatCompactNumber(stats.avgGold)}
+                          note="Gold earned per match"
+                        />
+                        <StatColumn
+                          label="Peak kills"
+                          value={
+                            stats.peakKills ? String(stats.peakKills) : "--"
+                          }
+                          note="Highest kill total in loaded matches"
+                        />
+                        <StatColumn
+                          label="Mastery score"
+                          value={formatCompactNumber(data.summary.masteryScore)}
+                          note="Account-wide mastery score endpoint"
+                        />
                       </Box>
                     </Box>
+                  </Stack>
+                ) : (
+                  <Alert severity="info" variant="outlined">
+                    Run a lookup to populate the profile desk. This view is now
+                    optimized for loaded stats and mode-filtered history rather
+                    than placeholder cards.
+                  </Alert>
+                )}
+              </SectionBand>
 
-                    {summonerError ? (
-                      <Alert severity="warning">
-                        {formatError(summonerError)}
-                      </Alert>
-                    ) : null}
-
-                    <Box>
-                      <Stack
-                        direction={{ xs: "column", sm: "row" }}
-                        spacing={1}
-                        justifyContent="space-between"
-                        sx={{ mb: 1.5 }}
-                      >
-                        <Box>
-                          <Typography variant="h3">Ranked queues</Typography>
-                          <Typography
-                            variant="body2"
-                            color="text.secondary"
-                            sx={{ mt: 0.35 }}
-                          >
-                            Queue rows instead of isolated cards so comparison
-                            is fast.
-                          </Typography>
-                        </Box>
-                        <Chip
-                          label={`${data.summary.ranked?.length ?? 0} entries`}
-                          variant="outlined"
-                        />
-                      </Stack>
-                      {rankedError ? (
+              <Box
+                sx={{
+                  display: "grid",
+                  gap: { xs: 0, lg: 4 },
+                  gridTemplateColumns: {
+                    xs: "1fr",
+                    lg: "minmax(0, 1.55fr) minmax(280px, 0.8fr)",
+                  },
+                  alignItems: "start",
+                }}
+              >
+                <Box>
+                  <SectionBand
+                    title="Ranked ledger"
+                    subtitle="Read the queue context like a ledger, not a set of summary cards."
+                  >
+                    {data ? (
+                      rankedError ? (
                         <Alert severity="warning">
                           {formatError(rankedError)}
                         </Alert>
-                      ) : data.summary.ranked?.length ? (
+                      ) : rankedEntries.length ? (
                         <Stack
                           divider={
                             <Divider
                               flexItem
-                              sx={{ borderColor: "rgba(95, 103, 117, 0.12)" }}
+                              sx={{ borderColor: alpha("#5d6775", 0.14) }}
                             />
                           }
                         >
-                          {data.summary.ranked.map((entry) => {
-                            const games = entry.wins + entry.losses;
-                            const winRate =
-                              games > 0
-                                ? Math.round((entry.wins / games) * 100)
-                                : 0;
+                          {rankedEntries.map((entry) => {
+                            const totalGames = entry.wins + entry.losses;
+                            const winRate = totalGames
+                              ? Math.round((entry.wins / totalGames) * 100)
+                              : 0;
+
                             return (
                               <Box
-                                key={entry.leagueId + entry.queueType}
+                                key={`${entry.queueType}-${entry.leagueId}`}
                                 sx={{
                                   display: "grid",
-                                  gap: 1.5,
-                                  alignItems: "center",
+                                  gap: 1.4,
+                                  py: 1.6,
                                   gridTemplateColumns: {
                                     xs: "1fr",
-                                    md: "minmax(200px, 1.1fr) repeat(4, minmax(0, 0.8fr))",
+                                    md: "minmax(180px, 1.1fr) repeat(4, minmax(0, 0.7fr))",
                                   },
-                                  py: 1.2,
                                 }}
                               >
                                 <Box>
@@ -970,18 +1136,8 @@ export function App() {
                                     color="text.secondary"
                                     sx={{ mt: 0.35 }}
                                   >
-                                    {entry.tier} {entry.rank}
-                                  </Typography>
-                                </Box>
-                                <Box>
-                                  <Typography
-                                    variant="caption"
-                                    color="text.secondary"
-                                  >
-                                    LP
-                                  </Typography>
-                                  <Typography variant="subtitle2">
-                                    {entry.leaguePoints}
+                                    {entry.tier} {entry.rank} Â·{" "}
+                                    {entry.leaguePoints} LP
                                   </Typography>
                                 </Box>
                                 <Box>
@@ -1011,6 +1167,17 @@ export function App() {
                                     variant="caption"
                                     color="text.secondary"
                                   >
+                                    Games
+                                  </Typography>
+                                  <Typography variant="subtitle2">
+                                    {totalGames}
+                                  </Typography>
+                                </Box>
+                                <Box>
+                                  <Typography
+                                    variant="caption"
+                                    color="text.secondary"
+                                  >
                                     Win rate
                                   </Typography>
                                   <Typography variant="subtitle2">
@@ -1025,186 +1192,273 @@ export function App() {
                         <Alert severity="info" variant="outlined">
                           No ranked entries returned for this player.
                         </Alert>
-                      )}
-                    </Box>
+                      )
+                    ) : (
+                      <Typography variant="body2" color="text.secondary">
+                        Ranked entries appear here after a successful lookup.
+                      </Typography>
+                    )}
+                  </SectionBand>
 
-                    <Box>
-                      <Stack
-                        direction={{ xs: "column", sm: "row" }}
-                        spacing={1}
-                        justifyContent="space-between"
-                        sx={{ mb: 1.5 }}
-                      >
-                        <Box>
-                          <Typography variant="h3">
-                            Top mastery slice
-                          </Typography>
-                          <Typography
-                            variant="body2"
-                            color="text.secondary"
-                            sx={{ mt: 0.35 }}
-                          >
-                            Champion mastery presented as compact tokens rather
-                            than another pile of cards.
-                          </Typography>
-                        </Box>
-                        <Chip
-                          label={`${data.summary.masteryTop?.length ?? 0} champions`}
-                          variant="outlined"
-                        />
-                      </Stack>
-                      {masteryError ? (
-                        <Alert severity="warning">
-                          {formatError(masteryError)}
-                        </Alert>
-                      ) : data.summary.masteryTop?.length ? (
-                        <Stack
-                          direction="row"
-                          spacing={1.1}
-                          flexWrap="wrap"
-                          useFlexGap
+                  <SectionBand
+                    title="Mastery and challenge spikes"
+                    subtitle="Use the mastery endpoints plus Riot challenges to surface the bigger long-term numbers without resorting to decorative tiles."
+                  >
+                    {data ? (
+                      <Stack spacing={2.1}>
+                        <Box
+                          sx={{
+                            display: "grid",
+                            gap: 2,
+                            gridTemplateColumns: {
+                              xs: "repeat(2, minmax(0, 1fr))",
+                              md: "repeat(4, minmax(0, 1fr))",
+                            },
+                          }}
                         >
-                          {data.summary.masteryTop.map((entry) => (
-                            <Box
-                              key={entry.championId}
-                              sx={{
-                                minWidth: { xs: "100%", sm: 220 },
-                                px: 1.4,
-                                py: 1.2,
-                                borderRadius: "14px",
-                                border: "1px solid rgba(108, 125, 144, 0.18)",
-                                backgroundColor: "rgba(108, 125, 144, 0.08)",
-                              }}
-                            >
-                              <Stack
-                                direction="row"
-                                justifyContent="space-between"
-                                spacing={1.5}
-                                alignItems="center"
+                          <StatColumn
+                            label="Top mastery total"
+                            value={formatCompactNumber(masteryPointsShown)}
+                            note={`${masteryEntries.length} champions in the top slice`}
+                          />
+                          <StatColumn
+                            label="Challenge level"
+                            value={formatCompactNumber(
+                              data.summary.challenges?.level,
+                            )}
+                            note="From Riot challenges player data"
+                          />
+                          <StatColumn
+                            label="Challenge points"
+                            value={formatCompactNumber(
+                              data.summary.challenges?.current,
+                            )}
+                            note="Current total points"
+                          />
+                          <StatColumn
+                            label="Percentile"
+                            value={formatPercent(
+                              data.summary.challenges?.percentile,
+                            )}
+                            note="If the endpoint returned it"
+                          />
+                        </Box>
+
+                        {masteryError ? (
+                          <Alert severity="warning">
+                            {formatError(masteryError)}
+                          </Alert>
+                        ) : null}
+                        {challengesError ? (
+                          <Alert severity="warning">
+                            {formatError(challengesError)}
+                          </Alert>
+                        ) : null}
+
+                        {masteryEntries.length ? (
+                          <Stack
+                            divider={
+                              <Divider
+                                flexItem
+                                sx={{ borderColor: alpha("#5d6775", 0.14) }}
+                              />
+                            }
+                          >
+                            {masteryEntries.map((entry) => (
+                              <Box
+                                key={entry.championId}
+                                sx={{
+                                  display: "grid",
+                                  gap: 1.1,
+                                  py: 1.2,
+                                  gridTemplateColumns: {
+                                    xs: "1fr",
+                                    md: "minmax(220px, 1.1fr) minmax(140px, 0.8fr) repeat(3, minmax(0, 0.6fr))",
+                                  },
+                                }}
                               >
+                                <Box>
+                                  <Typography variant="h3">
+                                    {getChampionName(
+                                      entry.championId,
+                                      championNames,
+                                    )}
+                                  </Typography>
+                                  <Box
+                                    style={{
+                                      display: "flex",
+                                      flexDirection: "column",
+                                    }}
+                                  >
+                                    <Typography
+                                      variant="caption"
+                                      color="text.secondary"
+                                    >
+                                      Last played{" "}
+                                      {formatLastPlayed(entry.lastPlayTime)}
+                                    </Typography>
+                                  </Box>
+                                </Box>
+
                                 <Box>
                                   <Typography
                                     variant="caption"
                                     color="text.secondary"
-                                    sx={{ letterSpacing: "0.1em" }}
                                   >
-                                    Champion {entry.championId}
+                                    Level
                                   </Typography>
-                                  <Typography
-                                    variant="subtitle2"
-                                    sx={{ mt: 0.35 }}
-                                  >
-                                    {entry.championPoints.toLocaleString()}{" "}
-                                    points
+                                  <Typography variant="subtitle2">
+                                    {entry.championLevel}
                                   </Typography>
                                 </Box>
-                                <Chip
-                                  label={`Lv ${entry.championLevel}`}
-                                  size="small"
-                                  color="secondary"
-                                  variant="outlined"
-                                />
-                              </Stack>
-                            </Box>
-                          ))}
-                        </Stack>
-                      ) : (
-                        <Alert severity="info" variant="outlined">
-                          No mastery payload returned for this player.
-                        </Alert>
-                      )}
-                    </Box>
-
-                    <Box>
-                      <Stack
-                        direction={{ xs: "column", sm: "row" }}
-                        spacing={1}
-                        justifyContent="space-between"
-                        sx={{ mb: 1.5 }}
-                      >
-                        <Box>
-                          <Typography variant="h3">
-                            Recent match sample
-                          </Typography>
-                          <Typography
-                            variant="body2"
-                            color="text.secondary"
-                            sx={{ mt: 0.35 }}
-                          >
-                            Recent games shown as ledger rows with result
-                            emphasis instead of boxed tiles.
-                          </Typography>
-                        </Box>
-                        <Chip
-                          label={`${successfulMatches.length} loaded matches`}
-                          variant="outlined"
-                        />
+                                <Box>
+                                  <Typography
+                                    variant="caption"
+                                    color="text.secondary"
+                                  >
+                                    Points
+                                  </Typography>
+                                  <Typography variant="subtitle2">
+                                    {entry.championPoints.toLocaleString()}
+                                  </Typography>
+                                </Box>
+                                <Box>
+                                  <Typography
+                                    variant="caption"
+                                    color="text.secondary"
+                                  >
+                                    Share
+                                  </Typography>
+                                  <Typography variant="subtitle2">
+                                    {masteryPointsShown
+                                      ? `${Math.round((entry.championPoints / masteryPointsShown) * 100)}%`
+                                      : "--"}
+                                  </Typography>
+                                </Box>
+                              </Box>
+                            ))}
+                          </Stack>
+                        ) : null}
                       </Stack>
+                    ) : (
+                      <Typography variant="body2" color="text.secondary">
+                        Mastery and challenge data will populate here after a
+                        lookup.
+                      </Typography>
+                    )}
+                  </SectionBand>
 
-                      <Stack
-                        spacing={1.25}
-                        sx={{ mb: successfulMatches.length ? 1.25 : 0 }}
-                      >
-                        {matchError ? (
+                  <SectionBand
+                    title="Match history workbench"
+                    subtitle="Load deeper history, then switch the ledger by queue or mode. ARAM Mayhem should split out here if Riot exposes it as a distinct queue in the loaded match set."
+                    action={
+                      data ? (
+                        <Stack
+                          direction={{ xs: "column", sm: "row" }}
+                          spacing={1}
+                        >
+                          <TextField
+                            select
+                            size="small"
+                            label="Mode filter"
+                            value={activeMode}
+                            onChange={(event) =>
+                              setActiveMode(event.target.value)
+                            }
+                            sx={{ minWidth: 220 }}
+                          >
+                            {modeOptions.map((option) => (
+                              <MenuItem key={option.key} value={option.key}>
+                                {option.label} ({option.count})
+                              </MenuItem>
+                            ))}
+                          </TextField>
+                          <Button
+                            variant="outlined"
+                            startIcon={<DataObjectRounded />}
+                            onClick={() => handlePageChange("payload")}
+                          >
+                            Open payload lab
+                          </Button>
+                        </Stack>
+                      ) : undefined
+                    }
+                  >
+                    {data ? (
+                      <Stack spacing={1.6}>
+                        <Stack
+                          direction="row"
+                          spacing={1}
+                          flexWrap="wrap"
+                          useFlexGap
+                        >
+                          <Chip
+                            icon={<FilterAltRounded />}
+                            label={`${filteredInsights.length} visible rows`}
+                            variant="outlined"
+                          />
+                          <Chip
+                            icon={<QueryStatsRounded />}
+                            label={`${data.meta.matchCountLoaded}/${data.query.matchCount} details loaded`}
+                            variant="outlined"
+                          />
+                          <Chip
+                            icon={<TimelineRounded />}
+                            label={`${data.meta.timelineCountLoaded} timeline payloads`}
+                            variant="outlined"
+                          />
+                        </Stack>
+
+                        {matchIdsError ? (
                           <Alert severity="warning">
-                            {formatError(matchError)}
+                            {formatError(matchIdsError)}
                           </Alert>
                         ) : null}
                         {matchDetailErrors.length ? (
                           <Alert severity="warning">
                             {matchDetailErrors.length} match detail request(s)
-                            failed. Check the partial failures panel.
+                            failed. The ledger shows the successful rows; the
+                            payload lab keeps the full request coverage.
                           </Alert>
                         ) : null}
-                      </Stack>
+                        {timelineErrors.length ? (
+                          <Alert severity="warning">
+                            {timelineErrors.length} timeline request(s) failed.
+                            This is common when Riot rate limits deeper history
+                            pulls.
+                          </Alert>
+                        ) : null}
 
-                      {successfulMatches.length ? (
-                        <Stack
-                          divider={
-                            <Divider
-                              flexItem
-                              sx={{ borderColor: "rgba(95, 103, 117, 0.12)" }}
-                            />
-                          }
-                        >
-                          {successfulMatches.map((match) => {
-                            const participant = findParticipant(
-                              match,
-                              data.summary.account
-                            );
-                            const resultColor = participant?.win
-                              ? "#6f8d7d"
-                              : "#a96f78";
-                            return (
-                              <Box
-                                key={match.id}
-                                sx={{
-                                  position: "relative",
-                                  py: 1.6,
-                                  pl: 2.2,
-                                  "&::before": {
-                                    content: '""',
-                                    position: "absolute",
-                                    insetInlineStart: 0,
-                                    insetBlockStart: 22,
-                                    width: 10,
-                                    height: 10,
-                                    borderRadius: "50%",
-                                    backgroundColor: participant
-                                      ? resultColor
-                                      : "#8a9bb0",
-                                    boxShadow: `0 0 0 6px ${alpha(resultColor, participant ? 0.12 : 0.08)}`,
-                                  },
-                                }}
-                              >
+                        {filteredInsights.length ? (
+                          <Stack
+                            divider={
+                              <Divider
+                                flexItem
+                                sx={{ borderColor: alpha("#5d6775", 0.14) }}
+                              />
+                            }
+                          >
+                            {filteredInsights.map((entry) => {
+                              const participant = entry.participant;
+                              const resultColor = participant?.win
+                                ? "success.main"
+                                : "error.main";
+                              const cs =
+                                (participant?.totalMinionsKilled ?? 0) +
+                                (participant?.neutralMinionsKilled ?? 0);
+
+                              return (
                                 <Box
+                                  key={entry.match.id}
                                   sx={{
+                                    py: 1.5,
                                     display: "grid",
-                                    gap: 1.5,
+                                    gap: 1.4,
                                     gridTemplateColumns: {
                                       xs: "1fr",
-                                      md: "minmax(240px, 1.2fr) repeat(4, minmax(0, 0.9fr))",
+                                      xl: "minmax(200px, 1fr) minmax(120px, 0.6fr) minmax(100px, 0.55fr) minmax(120px, 0.7fr) minmax(110px, 0.65fr) minmax(110px, 0.65fr) minmax(130px, 0.8fr)",
                                     },
+                                    alignItems: "start",
                                   }}
                                 >
                                   <Box>
@@ -1216,11 +1470,14 @@ export function App() {
                                       useFlexGap
                                     >
                                       <Typography variant="h3">
-                                        {match.data.info?.gameMode ??
-                                          "Unknown mode"}
+                                        {entry.modeLabel}
                                       </Typography>
                                       <Chip
-                                        label={match.id}
+                                        label={
+                                          entry.match.data.info?.queueId
+                                            ? `Queue ${entry.match.data.info.queueId}`
+                                            : entry.modeNote
+                                        }
                                         size="small"
                                         variant="outlined"
                                       />
@@ -1228,26 +1485,13 @@ export function App() {
                                     <Typography
                                       variant="body2"
                                       color="text.secondary"
-                                      sx={{ mt: 0.45 }}
+                                      sx={{ mt: 0.35 }}
                                     >
-                                      {match.data.info?.gameCreation
+                                      {entry.match.data.info?.gameCreation
                                         ? new Date(
-                                            match.data.info.gameCreation
+                                            entry.match.data.info.gameCreation,
                                           ).toLocaleString()
                                         : "Unknown start"}
-                                    </Typography>
-                                  </Box>
-                                  <Box>
-                                    <Typography
-                                      variant="caption"
-                                      color="text.secondary"
-                                    >
-                                      Duration
-                                    </Typography>
-                                    <Typography variant="subtitle2">
-                                      {formatDuration(
-                                        match.data.info?.gameDuration
-                                      )}
                                     </Typography>
                                   </Box>
                                   <Box>
@@ -1266,12 +1510,52 @@ export function App() {
                                       variant="caption"
                                       color="text.secondary"
                                     >
+                                      Duration
+                                    </Typography>
+                                    <Typography variant="subtitle2">
+                                      {formatDuration(
+                                        entry.match.data.info?.gameDuration,
+                                      )}
+                                    </Typography>
+                                  </Box>
+                                  <Box>
+                                    <Typography
+                                      variant="caption"
+                                      color="text.secondary"
+                                    >
                                       K / D / A
                                     </Typography>
                                     <Typography variant="subtitle2">
                                       {participant
                                         ? `${participant.kills}/${participant.deaths}/${participant.assists}`
                                         : "Unavailable"}
+                                    </Typography>
+                                  </Box>
+                                  <Box>
+                                    <Typography
+                                      variant="caption"
+                                      color="text.secondary"
+                                    >
+                                      Damage
+                                    </Typography>
+                                    <Typography variant="subtitle2">
+                                      {formatCompactNumber(
+                                        participant?.totalDamageDealtToChampions,
+                                      )}
+                                    </Typography>
+                                  </Box>
+                                  <Box>
+                                    <Typography
+                                      variant="caption"
+                                      color="text.secondary"
+                                    >
+                                      Gold / CS
+                                    </Typography>
+                                    <Typography variant="subtitle2">
+                                      {formatCompactNumber(
+                                        participant?.goldEarned,
+                                      )}{" "}
+                                      / {cs || "--"}
                                     </Typography>
                                   </Box>
                                   <Box>
@@ -1297,128 +1581,277 @@ export function App() {
                                     </Typography>
                                   </Box>
                                 </Box>
-                              </Box>
-                            );
-                          })}
-                        </Stack>
-                      ) : (
-                        <Alert severity="info" variant="outlined">
-                          No match details were returned.
-                        </Alert>
-                      )}
-                    </Box>
+                              );
+                            })}
+                          </Stack>
+                        ) : (
+                          <Alert severity="info" variant="outlined">
+                            No matches for the current mode filter. Try
+                            switching back to all loaded modes.
+                          </Alert>
+                        )}
+                      </Stack>
+                    ) : (
+                      <Typography variant="body2" color="text.secondary">
+                        The match workbench will appear here after a lookup.
+                      </Typography>
+                    )}
+                  </SectionBand>
+                </Box>
 
-                    {data.errors.length ? (
-                      <Alert
-                        severity="warning"
-                        icon={<WarningAmberRounded fontSize="inherit" />}
-                      >
-                        <Typography variant="subtitle2" sx={{ mb: 1 }}>
-                          Partial failures
-                        </Typography>
-                        <Stack spacing={0.75}>
-                          {data.errors.map((entry) => (
-                            <Typography
-                              key={`${entry.endpoint}-${entry.status}`}
-                              variant="body2"
-                            >
-                              {formatError(entry)}
-                            </Typography>
-                          ))}
-                        </Stack>
-                      </Alert>
-                    ) : null}
-                  </Stack>
-                ) : status === "loading" ? (
-                  <Alert severity="info" variant="outlined">
-                    Loading Riot profile data.
-                  </Alert>
-                ) : (
-                  <Alert severity="info" variant="outlined">
-                    Run a search to populate the profile view. The app will
-                    retain your last Riot ID locally in the browser.
-                  </Alert>
-                )}
-              </SectionFrame>
-            </Stack>
-
-            <SectionFrame
-              title="Raw JSON inspector"
-              subtitle="The exact backend payload stays visible as a persistent working surface while you search and compare results."
-              action={
-                <Chip
-                  icon={<DataObjectRounded />}
-                  label="Live payload"
-                  variant="outlined"
-                />
-              }
-            >
-              <Box sx={{ position: { xl: "sticky" }, top: { xl: 24 } }}>
-                <Tabs
-                  value={activeRawSection}
-                  onChange={handleRawSectionChange}
-                  variant="scrollable"
-                  allowScrollButtonsMobile
-                  aria-label="Raw response sections"
+                <Box
                   sx={{
-                    minHeight: 40,
-                    "& .MuiTabs-flexContainer": {
-                      gap: 0.75,
-                    },
-                    "& .MuiTabs-indicator": {
-                      height: 2,
-                      borderRadius: "999px",
-                    },
+                    borderLeft: { lg: `1px solid ${ruleColor}` },
+                    pl: { lg: 3 },
                   }}
                 >
-                  {rawSections.map((section) => (
-                    <Tab
-                      key={section.key}
-                      id={`raw-tab-${section.key}`}
-                      value={section.key}
-                      aria-controls={`raw-panel-${section.key}`}
-                      label={section.label}
-                    />
-                  ))}
-                </Tabs>
-
-                {rawSections.map((section) => (
-                  <RawPanel
-                    key={section.key}
-                    value={section.key}
-                    activeValue={activeRawSection}
+                  <SectionBand
+                    title="Request coverage"
+                    subtitle="This side rail tracks how much of the Riot surface actually landed in the response, without dumping JSON into the main desk."
                   >
-                    <Paper
-                      variant="outlined"
-                      sx={{
-                        borderRadius: "18px",
-                        p: 2,
-                        borderColor: "rgba(95, 103, 117, 0.14)",
-                        bgcolor: "rgba(247, 241, 231, 0.96)",
-                        maxHeight: { xs: 420, xl: "calc(100vh - 120px)" },
-                        overflow: "auto",
-                      }}
+                    {data ? (
+                      <Stack>
+                        {data.meta.apiCalls.map((call) => (
+                          <EndpointLine
+                            key={call.key}
+                            call={call}
+                            active={call.key === activeRawSection}
+                            onClick={() => {
+                              setActiveRawSection(call.key);
+                              handlePageChange("payload");
+                            }}
+                          />
+                        ))}
+                      </Stack>
+                    ) : (
+                      <Typography variant="body2" color="text.secondary">
+                        Endpoint coverage will populate here after the first
+                        successful search.
+                      </Typography>
+                    )}
+                  </SectionBand>
+
+                  <SectionBand
+                    title="Field notes"
+                    subtitle="A few higher-signal notes about what the loaded data is actually telling you."
+                  >
+                    {data ? (
+                      <Stack spacing={1.4}>
+                        <Box>
+                          <Typography variant="subtitle2">
+                            Summoner level
+                          </Typography>
+                          <Typography variant="body2" color="text.secondary">
+                            {formatCompactNumber(
+                              data.summary.summoner?.summonerLevel,
+                            )}
+                            . This comes from the platform-scoped summoner
+                            endpoint, not the account endpoint.
+                          </Typography>
+                        </Box>
+                        <Box>
+                          <Typography variant="subtitle2">
+                            History depth
+                          </Typography>
+                          <Typography variant="body2" color="text.secondary">
+                            Requested {data.query.matchCount} recent matches and
+                            resolved {data.meta.matchCountLoaded} full match
+                            details. That is the deepest slice currently kept on
+                            the desk.
+                          </Typography>
+                        </Box>
+                        <Box>
+                          <Typography variant="subtitle2">
+                            ARAM vs ARAM Mayhem
+                          </Typography>
+                          <Typography variant="body2" color="text.secondary">
+                            Riot positions ARAM Mayhem as a separate
+                            limited-time queue with Augments rather than
+                            standard ARAM. Queue metadata for new modes can lag
+                            in developer docs, so this app groups by returned
+                            queue ID first and only falls back to generic
+                            gameMode labels.
+                          </Typography>
+                        </Box>
+                        <Box>
+                          <Typography variant="subtitle2">
+                            Partial failures
+                          </Typography>
+                          <Typography variant="body2" color="text.secondary">
+                            {data.errors.length
+                              ? `${data.errors.length} endpoint issue(s) are still attached to this profile pull. They remain inspectable in the payload lab instead of being hidden.`
+                              : "No endpoint failures were recorded in this pull."}
+                          </Typography>
+                        </Box>
+                      </Stack>
+                    ) : (
+                      <Typography variant="body2" color="text.secondary">
+                        Field notes appear after a successful lookup.
+                      </Typography>
+                    )}
+                  </SectionBand>
+
+                  {data?.errors.length ? (
+                    <SectionBand
+                      title="Partial failures"
+                      subtitle="Backend trouble stays visible. Nothing here is silently swallowed."
                     >
-                      <Typography
-                        component="pre"
+                      <Stack spacing={1}>
+                        {data.errors.map((entry) => (
+                          <Alert
+                            key={`${entry.endpoint}-${entry.status}`}
+                            severity="warning"
+                            icon={<WarningAmberRounded fontSize="inherit" />}
+                          >
+                            {formatError(entry)}
+                          </Alert>
+                        ))}
+                      </Stack>
+                    </SectionBand>
+                  ) : null}
+                </Box>
+              </Box>
+            </Stack>
+          ) : (
+            <Stack spacing={0}>
+              <SectionBand
+                title="Payload lab"
+                subtitle="Every endpoint gets its own lane. This is where the raw Riot payload belongs, along with request coverage and the bigger endpoint story."
+                action={
+                  data ? (
+                    <Stack
+                      direction="row"
+                      spacing={1}
+                      flexWrap="wrap"
+                      useFlexGap
+                    >
+                      <Chip
+                        icon={<AutoAwesomeRounded />}
+                        label={`${data.meta.apiCalls.length} endpoint groups`}
+                        variant="outlined"
+                      />
+                      <Chip
+                        icon={<DataObjectRounded />}
+                        label={activeCall?.label ?? "Raw payload"}
+                        variant="outlined"
+                      />
+                    </Stack>
+                  ) : undefined
+                }
+              >
+                {data ? (
+                  <Box
+                    sx={{
+                      display: "grid",
+                      gap: { xs: 3, lg: 4 },
+                      gridTemplateColumns: {
+                        xs: "1fr",
+                        lg: "minmax(280px, 0.8fr) minmax(0, 1.4fr)",
+                      },
+                    }}
+                  >
+                    <Box>
+                      <Stack spacing={0}>
+                        {data.meta.apiCalls.map((call) => (
+                          <EndpointLine
+                            key={call.key}
+                            call={call}
+                            active={call.key === activeRawSection}
+                            onClick={() => setActiveRawSection(call.key)}
+                          />
+                        ))}
+                      </Stack>
+                    </Box>
+
+                    <Stack spacing={2.1}>
+                      <Box
+                        sx={{ borderBottom: `1px solid ${ruleColor}`, pb: 1.6 }}
+                      >
+                        <Typography variant="h2">
+                          {activeCall?.label ?? "Raw payload"}
+                        </Typography>
+                        <Typography
+                          variant="body2"
+                          color="text.secondary"
+                          sx={{ mt: 0.55 }}
+                        >
+                          {activeCall
+                            ? `${activeCall.endpoint} Â· HTTP ${activeCall.status} Â· ${activeCall.returned ?? 0} payload item(s) returned`
+                            : "Select an endpoint lane to inspect the exact JSON returned by the backend."}
+                        </Typography>
+                      </Box>
+
+                      <Box
                         sx={{
-                          m: 0,
-                          fontSize: 13,
-                          lineHeight: 1.65,
-                          fontFamily: '"Cascadia Code", "Consolas", monospace',
-                          whiteSpace: "pre-wrap",
-                          wordBreak: "break-word",
-                          color: "#2a3140",
+                          display: "grid",
+                          gap: 2,
+                          gridTemplateColumns: {
+                            xs: "repeat(2, minmax(0, 1fr))",
+                            md: "repeat(4, minmax(0, 1fr))",
+                          },
                         }}
                       >
-                        {JSON.stringify(rawPayload, null, 2)}
-                      </Typography>
-                    </Paper>
-                  </RawPanel>
-                ))}
-              </Box>
-            </SectionFrame>
-          </Box>
+                        <StatColumn
+                          label="Requested matches"
+                          value={data.meta.matchCountRequested.toString()}
+                          note="History depth asked of match-v5"
+                        />
+                        <StatColumn
+                          label="Loaded details"
+                          value={data.meta.matchCountLoaded.toString()}
+                          note="Successful full match payloads"
+                        />
+                        <StatColumn
+                          label="Timelines"
+                          value={data.meta.timelineCountLoaded.toString()}
+                          note="Timeline sample payloads returned"
+                        />
+                        <StatColumn
+                          label="Failures"
+                          value={data.errors.length.toString()}
+                          note="Across all endpoint groups in this pull"
+                        />
+                      </Box>
+
+                      <Box
+                        sx={{
+                          minHeight: 540,
+                          border: `1px solid ${alpha("#5d6775", 0.16)}`,
+                          backgroundColor: alpha("#ffffff", 0.46),
+                          px: 2,
+                          py: 1.8,
+                          overflow: "auto",
+                        }}
+                      >
+                        <Typography
+                          component="pre"
+                          sx={{
+                            m: 0,
+                            whiteSpace: "pre-wrap",
+                            wordBreak: "break-word",
+                            fontSize: 13,
+                            lineHeight: 1.7,
+                            color: "text.primary",
+                            fontFamily:
+                              '"Cascadia Code", "Consolas", monospace',
+                          }}
+                        >
+                          {JSON.stringify(rawPayload, null, 2)}
+                        </Typography>
+                      </Box>
+                    </Stack>
+                  </Box>
+                ) : (
+                  <Alert severity="info" variant="outlined">
+                    Run a lookup first. The payload lab now tracks account,
+                    summoner, ranked, mastery, challenges, platform status,
+                    match IDs, match details, and timeline samples on separate
+                    endpoint lanes.
+                  </Alert>
+                )}
+              </SectionBand>
+            </Stack>
+          )}
         </Stack>
       </Container>
     </ThemeProvider>
